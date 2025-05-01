@@ -1,0 +1,15 @@
+---
+title: "Pedodiversidad en Colombia"
+subtitle: "Análisis geoespacial"
+format: revealjs
+footer: Carlos Manuel Guío Blanco
+theme: simple
+---
+
+
+## Colombia, un país biodiverso... ¿y geodiverso? 
+
+
+
+##
+
