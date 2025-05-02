@@ -13,7 +13,7 @@ La pedodiversidad se calcula mediante los índices ([Ibañez & Pfeiffer 2023](ht
 ### Los datos
 1. La fuente de datos vectoriales es el Instituto Geográfico Agustin Codazzi (IGAC). Las UCS se utilizan en el marco conceptual desarrollado por ([Zinck et al. 2016](https://link.springer.com/book/10.1007/978-3-319-19159-1)), seguido en los levantamientos de suelos del IGAC 
 ([2022](https://www.igac.gov.co/sites/default/files/listadomaestro/in-agr-pc02-05_elaboracion_de_cartografia_geomorfologica_0.pdf)), según el cual la geomorfología ofrece el marco natural para estudiar la formación, evolución y distribución de suelos.
-2. La fuente de datos de elevación rasterizados es el satélite SRTM de la NASA, de resolución de 30m, disponibles a través de ([Google Earth Engine](https://developers.google.com/earth-engine/datasets/catalog/USGS_SRTMGL1_003?hl=es-419))
+2. La fuente de datos de elevación rasterizados es el satélite SRTM de la NASA, de resolución de 30m, disponibles a través de [Google Earth Engine](https://developers.google.com/earth-engine/datasets/catalog/USGS_SRTMGL1_003?hl=es-419)
 
 ### Contenido del repositorio (en proceso)
 - [Presentación del proyecto](https://cmguiob.github.io/pedodiv-colombia/2025_SLIDES_Pedodiversidad-Colombia.html#/pedodiversidad-en-colombia)
