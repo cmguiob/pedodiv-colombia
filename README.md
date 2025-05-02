@@ -23,6 +23,6 @@ Este estudio responde a la pregunta, ¿cómo ocurren espacialmente y se relacion
 - Script (js) para la carga de datos de elevación digital desde GEE
 - Script (R) para la estimación de métricas de pedodiversidad 
 - Script (R) para el análisis geoespacial de la pedodiversidad
-- Script (R) para la estimación de métricas de digersidad geomorfológica
+- Script (R) para la estimación de métricas de diversidad geomorfológica
 - Script (R) de análisis de la relación entre pedodiversidad y diversidad geomorfológica
 - Figuras
