@@ -35,10 +35,10 @@ Carlos Manuel Guío Blanco
 :::
 
 ::: {.column width="60%"}
-- Pero, no hay un concenso sobre la geodiversidad 
+- Pero, no hay un concenso sobre medir la geodiversidad (Maliniemi et al. 2023, Hjort et al. 2023)
 - La *pedosfera* (del Griego πέδον [pédon] suelo) está en la interfase de las otras *esferas*
-- La pedodiversidad intersecta múltiples diversidades (referencia xxxx), y se ha relacionado especialmente con la biodiversidad (referencias...)
-- Se relaciona a múltiples servicios ecosistémicos (referencia xxxx)
+- La pedodiversidad intersecta múltiples diversidades (Ibañez & Brevik 2019, 2023), y se ha relacionado especialmente con la biodiversidad (Ibañez & Feoli 2013)
+- Se relaciona a múltiples servicios ecosistémicos (Mikhailova et al. 2021)
 - Aún así, no se ha estructurado su estudio en Colombia
 :::
 
@@ -49,12 +49,13 @@ Fuente: Instagram @serviciogeologicocolombiano (2024) *¿Sabes qué es la geodiv
 :::
 
 
-##
+## {.samller}
 ### Metodología para su estudio
 
+![](Presentation/250430_PRESENTACION1_Metodos-01.png)
 
-##
-### Datos para estudiar la pedodiversidad
+<span style="font-size:0.4em">Rossiter et al. (2017), Daly et al. (2018), Ibañez & Pfeiffer 2023</span>
+
 
 
 
