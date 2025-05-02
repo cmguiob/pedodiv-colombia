@@ -17,7 +17,7 @@ Este estudio responde a la pregunta, ¿cómo ocurren espacialmente y se relacion
 2. La fuente de datos de elevación rasterizados es el satélite SRTM de la NASA, de resolución de 30m, disponibles a través de [Google Earth Engine](https://developers.google.com/earth-engine/datasets/catalog/USGS_SRTMGL1_003?hl=es-419)
 
 ### Contenido del repositorio (en proceso)
-- [Presentación del proyecto](https://cmguiob.github.io/pedodiv-colombia/2025_SLIDES_Pedodiversidad-Colombia.html#/pedodiversidad-en-colombia](https://cmguiob.github.io/pedodiv-colombia/Slides/Slides_Pedodiversidad-Colombia#/pedodiversidad-en-colombia))
+- [Presentación del proyecto](https://cmguiob.github.io/pedodiv-colombia/Slides/Slides_Pedodiversidad-Colombia#/pedodiversidad-en-colombia))
 - Conjunto de datos (para pruebas) de UCS
 - Script (R) para la carga masiva de datos de UCS via API
 - Script (js) para la carga de datos de elevación digital desde GEE
