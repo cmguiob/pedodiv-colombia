@@ -1,15 +1,46 @@
 ---
-title: "Pedodiversidad en Colombia"
-subtitle: "Análisis geoespacial"
 format: revealjs
-footer: Carlos Manuel Guío Blanco
 theme: simple
 ---
 
-
-## Colombia, un país biodiverso... ¿y geodiverso? 
-
-
-
 ##
+::: {.center}
+
+### Pedodiversidad en Colombia
+
+Análisis geoespacial
+
+::: aside
+Carlos Manuel Guío Blanco
+:::
+
+:::
+
+
+## {.smaller}
+### Colombia, ¿un país pedodiverso? 
+
+<br>  
+
+:::: {.columns}
+
+::: {.column width="35%"}
+{{< video Presentation/2024_VID_GeodiversidadSGC.mp4 width="300" height="500" >}}
+:::
+
+::: {.column width="60%"}
+- La pedosfera está en la interfase de las otras *esferas*
+- La pedodiversidad intersecta múltiples diversidades (referencia xxxx)
+- Se ha integrado con el discurso de la biodiversidad (referencia xxxx)
+- Se relaciona a múltiples servicios ecosistémicos (referencia xxxx)
+- No hay un concenso para su estudio en Colombia
+:::
+
+::::
+
+::: {.footer-left style="font-size:0.6em; color:#888"}
+Fuente: Instagram @serviciogeologicocolombiano (2024) *¿Sabes qué es la geodiversidad?* 
+:::
+
+
 
