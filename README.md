@@ -5,7 +5,7 @@
 Este repositorio presenta un *análisis geoespacial de pedodiversidad* (i.e. diversidad de suelos) en Colombia. La pedodiversidad se calcula mediante los índices de entropía de Shannon (H') y Gao (Q), con base en distancias taxonómicas-jerárquicas y proporciones de los suelos reportados dentro de polígonos de unidades cartográficas de suelos (UCS). La fuente de datos es el Instituto Geográfico Agustin Codazzi (IGAC). Los scripts usan el lenguaje de programación R. 
 
 **Este repositorio contiene**:
-- Presentación del proyecto
+- [Presentación del proyecto](https://cmguiob.github.io/pedodiv-colombia/2025_SLIDES_Pedodiversidad-Colombia.html#/pedodiversidad-en-colombia)
 - Conjunto de datos (para pruebas) de UCS
 - Script para la carga masiva de datos de UCS via API
 - Script para la estimación de métricas de pedodiversidad 
