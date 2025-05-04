@@ -22,7 +22,7 @@ knitr::opts_chunk$set(echo = TRUE)
 if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
-pacman::p_load(char = c("httr", "jsonlite", "sf", "dplyr", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+pacman::p_load(char = c("httr", "googledrive", "jsonlite", "sf", "dplyr", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
 
 ```
 
@@ -71,10 +71,16 @@ respuesta <- httr::GET(url_solicitud)
 print(respuesta)
 ```
 
-A continuación se extraen usando la librería `sf`y se define el sistema de coordenadas de referencia con base en la información suministrada en la url general que proporciona información de las capas.
+Una vez se obtiene la respuesta con status 200, se procede a extraer lso datos usando la librería `sf`.
 
 ```{r get_data}
 
-datos_sf_wgs84 <- sf::st_read(url_solicitud, quiet = TRUE)
+# el id aparece en la URL del archivo
+archivo_drive <- drive_download(file = as_id("1ltc0txG3RIUVr67lvIwTv_DBO6YVnzP4"), overwrite = TRUE)
+
+
 
 ```
+
+Se verifica visualmente la carga
+
