@@ -22,7 +22,7 @@ knitr::opts_chunk$set(echo = TRUE)
 if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
-pacman::p_load(char = c("httr", "googledrive", "jsonlite", "sf", "dplyr", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+pacman::p_load(char = c("httr", "googledrive", "jsonlite", "sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
 
 ```
 
@@ -80,3 +80,345 @@ datos_sf_wgs84 <- sf::st_read(url_solicitud, quiet = TRUE)
 
 Se verifica visualmente la carga
 
+```{r check_visually}
+
+#Se visualizan datos geográficamente (edad, sin leyenda)
+ggplot2::ggplot(datos_sf_wgs84) +
+  geom_sf(aes(fill = UCS)) +
+  theme(legend.position = "none")
+
+```
+
+## 2. Procesamiento
+
+### 2.1 Extracción de prefijos taxonómicos
+
+Seleccionamos datos que tengan formato válido.
+
+```{r filter_valid_components}
+
+datos_componentes_validos <- datos_sf_wgs84 %>%
+  # Extrae la parte que viene después de ":" (si existe)
+  mutate(
+    #quita todo lo que está antes (y justo después) de los dos puntos
+    despues_de_dos_puntos = str_remove(COMPONENTES_TAXONOMICOS, "^[^:]+:\\s*"),
+    #extrae la primera palabra de un texto
+    primer_palabra = word(despues_de_dos_puntos, 1)
+    ) |>
+  # Aplica el filtro:NO está en la lista negra de palabras problemáticas
+  filter(
+    !primer_palabra %in% c(
+      "Cuerpo",
+      "Misceláneos", 
+      "Afloramientos", 
+      "Vegetacion",
+      "Vegetación", 
+      "Otros", 
+      "Zona",
+      "Roca"
+      )
+    # o si tiene varios suelos separados por ";", se acepta igual
+    | str_detect(COMPONENTES_TAXONOMICOS, ";")
+    ) |>
+  # limpia columnas auxiliares
+  select(-despues_de_dos_puntos, -primer_palabra) |>
+  #Quita la geometría para evitar errores en unnest en pasos futuros
+  sf::st_drop_geometry() 
+
+```
+
+Se inspeccionan los datos excluidos. Esto se tiene que reevaluar, para que no queden huecos, no deberian quitarse, sino procesarse distinto.
+
+```{r check_excluded_components}
+
+# Segundo, filtrar los datos que fueron excluidos
+datos_excluidos <- datos_sf_wgs84 |>
+  st_drop_geometry() |>
+  anti_join(datos_componentes_validos, by = "OBJECTID")
+
+```
+
+
+Se verifica que las proporciones no superen el número de taxones reportados en cada UCS.
+
+```{r check_percentage}
+datos_con_error <- datos_componentes_validos %>%
+  mutate(
+    componentes = str_remove(COMPONENTES_TAXONOMICOS, "^[^:]+:\\s*"),
+    componentes = str_split(componentes, ";\\s*"),
+    porcentajes = str_split(PORCENTAJE, ",\\s*"),
+    n_componentes = map_int(componentes, length),
+    n_porcentajes = map_int(porcentajes, length)
+  ) %>%
+  filter(n_componentes != n_porcentajes)
+
+# Mostrar las UCS problemáticas
+print(datos_con_error %>% select(OBJECTID, COMPONENTES_TAXONOMICOS, PORCENTAJE))
+```
+
+
+
+A continuación, se separan los tipos de suelo dentro de la UCS en formato largo. Se corrigen porcentajes.
+
+```{r format_long}
+
+# Función que elimina el último porcentaje si hay uno de más
+corregir_porcentajes <- function(p_string, n_taxones) {
+  # Separa porcentajes por ","
+  p <- str_split(p_string, ",\\s*")[[1]]
+  # Si la longitud de la lista supera el número de taxones
+  if (length(p) == n_taxones + 1) {
+    p <- p[1:n_taxones]  # eliminar el último
+  }
+  return(p)
+}
+
+# Preprocesa los datos para separar componentes
+datos_largos <- datos_componentes_validos %>%
+  mutate(
+    # Extraer el nombre de la unidad si existe (ej: "Complejo", "Asociación")
+    # Si no hay ":", se asigna "Sin denominación"
+    unidad = if_else(
+      str_detect(COMPONENTES_TAXONOMICOS, ":"),
+      str_extract(COMPONENTES_TAXONOMICOS, "^[^:]+"),
+      "Sin denominación"
+    ),
+    # Elimina el nombre de la unidad para quedarnos solo con los taxones
+    componentes = str_remove(COMPONENTES_TAXONOMICOS, "^[^:]+:\\s*"),
+    # Separa taxones en lista por ";" o por "." subsecuentemente
+    componentes = str_split(componentes, ";\\s*|\\.\\s*"),
+    # Cuenta número de taxones
+    n_componentes = map_int(componentes, length),
+    # Corre la función para separar y corregir porcentajes (si hay uno de más)
+    porcentajes = map2(PORCENTAJE, n_componentes, corregir_porcentajes),
+    # Vuelve a contar los porcentajes corregidos
+    n_porcentajes = map_int(porcentajes, length)
+  ) %>%
+  # Filtra filas válidas (n° de taxones == n° de porcentajes)
+  filter(n_componentes == n_porcentajes) %>%
+  # Expande las listas
+  unnest(c(componentes, porcentajes)) %>%
+  # Limpia campos y convierte porcentajes a numérico
+  mutate(
+    nombre_taxonomico = str_trim(componentes),
+    porcentaje = as.numeric(porcentajes)
+  ) %>%
+  # Selecciona solo las columnas relevantes para análisis posterior
+  select(OBJECTID, unidad, nombre_taxonomico, porcentaje)
+
+
+```
+
+
+Se corrigen errores de ortografía conocidos (estos salen luego del paso que sigue, y se vuelve un paso antes para corregirlos)
+
+```{r correct_spelling}
+
+correcciones <- c("PIinthic" = "Plinthic", 
+                  "Endoaquads" = "Endoaquods", 
+                  "Udothents" = "Udorthents",
+                  "Fiuvaquents" = "Fluvaquents",
+                  "KandiuduIts" = "Kandiudults",
+                  "Quarzipsamments" = "Quartzipsamments")
+
+# Correcciones manuales conocidas (puedes agregar más si aparecen otros errores)
+datos_largos <- datos_largos |>
+  mutate(nombre_taxonomico = str_replace_all(nombre_taxonomico, correcciones))
+```
+
+Se añaden niveles taxonomicos usando SoilTaxonomy
+
+```{r}
+# Añadir niveles taxonómicos usando SoilTaxonomy
+datos_niveles <- datos_largos %>%
+  mutate(
+    orden = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "order")),
+    suborden = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "suborder")),
+    gran_grupo = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "greatgroup")),
+    subgrupo = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "subgroup"))
+  )
+```
+
+Se hace un chequeo para revisar si algunos nombres no pudieron procesarse. Se filtran los datos con NAs. Esto debido a que posteriormente se crea una función para extraer prefijos, la cual retorna error si hay NAs.
+
+```{r}
+
+datos_NA_niveles <- datos_niveles |>
+  filter(is.na(orden) | is.na(suborden) | is.na(gran_grupo) | is.na(subgrupo))
+
+datos_niveles_limpios <- datos_niveles |>
+  filter(!is.na(orden) | !is.na(suborden) | !is.na(gran_grupo) | !is.na(subgrupo))
+
+```
+
+
+A continuación se hacen ajustes en los datos y se crea una función para poder extraer prefijos de los niveles jerárquicos de los nombres. Se utiliza la librería SoilTaxonomy.
+
+```{r}
+
+# Tabla de prefijos para órdenes principales (puedes ampliarla)
+prefijos_orden <- tibble::tibble(
+  orden = c("entisols", "inceptisols", "alfisols", "ultisols", "mollisols", "vertisols", "aridisols", "oxisols", "spodosols", "histosols", "andisols", "gelisols"),
+  prefijo_orden = c("ents", "epts", "alfs", "ults", "olls", "erts", "ids", "ox", "ods", "ists", "ands", "els")
+)
+
+# Asocia prefijo de orden a los datos
+datos_niveles_limpios <- datos_niveles_limpios %>%
+  left_join(prefijos_orden, by = "orden")
+
+# Define función para generar el prefijo quitando el string de la jerarquia anterior
+extraer_prefijo_nuevo <- function(nombre_actual, anterior) {
+  if (is.na(nombre_actual) | is.na(anterior)) {
+    return(NA_character_)
+  } else {
+    nombre_minuscula <- tolower(nombre_actual)
+    anterior_minuscula <- tolower(anterior)
+    nuevo_prefijo <- str_remove(nombre_minuscula, fixed(anterior_minuscula))
+    nuevo_prefijo <- str_extract(nuevo_prefijo, "^[a-z]+")
+    return(nuevo_prefijo)
+  }
+}
+
+```
+
+Se extraen prefijos por niveles jerárquicos y se convierten porcentajes a proporciones. 
+
+```{r}
+
+datos_prefijos <- datos_niveles_limpios |>
+  mutate(
+    # El prefijo para suborden se obtiene quitando el prefijo del orden
+    prefijo_suborden = map2_chr(suborden, prefijo_orden, extraer_prefijo_nuevo),
+    # El prefijo para gran grupo se obtiene quitando el suborden
+    prefijo_gran_grupo = map2_chr(gran_grupo, suborden, extraer_prefijo_nuevo),
+    # El prefijo para subgrupo se obtiene quitando el gran grupo
+    prefijo_subgrupo = map2_chr(subgrupo, gran_grupo, extraer_prefijo_nuevo),
+    # convierte a proporción
+    proporcion = porcentaje / 100
+  ) |>
+  group_by(OBJECTID) |>
+  mutate(ID_INTERNO = row_number()) |>  # identificador único por taxón en cada unidad
+  ungroup() |>
+  select(-porcentaje)
+
+```
+
+### Cálculo de distancias taxonómicas
+
+Una vez se tienen los datos procesados, con prefijos taxonómicos separados y proporción por cada tipo de suelo, se procede a calcular distancias taxinómicas e índices.
+
+```{r}
+
+# Crear combinaciones de pares (i, j) correctamente
+pares <- datos_prefijos |>
+  group_by(OBJECTID) |>
+  summarise(
+    pares = list(tidyr::crossing(ID_1 = ID_INTERNO, ID_2 = ID_INTERNO)),
+    .groups = "drop" #elimina los grupos que se hayan formado 
+  ) |>
+  unnest(pares)
+
+# Ahora unir los datos de cada par i, j
+pares_datos <- pares %>%
+  left_join((datos_prefijos), 
+            by = c("OBJECTID", "ID_1" = "ID_INTERNO")
+            ) %>%
+  left_join((datos_prefijos), 
+            by = c("OBJECTID", "ID_2" = "ID_INTERNO"), 
+            suffix = c("_i", "_j"))
+
+```
+
+Se crea función para comparar prefijos nivel a nivel y calcular d_ij
+
+```{r}
+
+comparar_prefijos <- function(row) {
+  #Junta los prefijos del suelo i en un vector
+  niveles_i <- c(row$prefijo_orden_i, row$prefijo_suborden_i, row$prefijo_gran_grupo_i, row$prefijo_subgrupo_i)
+  #Junta los prefijos del suelo j en un vector
+  niveles_j <- c(row$prefijo_orden_j, row$prefijo_suborden_j, row$prefijo_gran_grupo_j, row$prefijo_subgrupo_j)
+
+  # Validar en qué niveles ambos tienen datos (no NA)
+  niveles_validos <- !is.na(niveles_i) & !is.na(niveles_j)
+  c <- sum(niveles_validos)  # número de niveles comparables
+
+  coincidencias <- niveles_i == niveles_j  # TRUE si coinciden por nivel
+
+  # No contar como coincidencia en subgrupo si es "typic" y los niveles anteriores son distintos
+  if (!is.na(row$prefijo_subgrupo_i) && row$prefijo_subgrupo_i == "typic") {
+    if (!is.na(row$prefijo_gran_grupo_i) && !is.na(row$prefijo_gran_grupo_j) &&
+        row$prefijo_gran_grupo_i != row$prefijo_gran_grupo_j) {
+      coincidencias[4] <- FALSE
+    }
+  }
+
+  x <- sum(coincidencias & niveles_validos)  # número de niveles con coincidencia real
+
+  dij <- if (c == 0) NA_real_ else (c - x) / c  # distancia d_ij
+
+  return(list(dij = dij, c = c, x = x))  # devolver todo como lista
+}
+
+```
+
+Se aplica funcación para  comparar fila por fila para calcular dij y pipj*dij
+
+```{r}
+
+resultado_df <- pares_datos |>
+  rowwise() |>
+  mutate(
+    resultado = list(comparar_prefijos(cur_data())),
+    dij       = resultado$dij,
+    c         = resultado$c,
+    x         = resultado$x,
+    prod_pipj_dij = proporcion_i * proporcion_j * dij
+  ) |>
+  ungroup() |>
+  select(-resultado,
+         -ID_1,
+         -ID_2,
+         -orden_i,
+         -orden_j, 
+         -suborden_i, 
+         -suborden_j,
+         - gran_grupo_i, 
+         - gran_grupo_j,
+        - subgrupo_i, 
+        - subgrupo_j
+        )  
+
+```
+
+A continuación se calcula el índce de diversidad de Rao (Q)
+
+```{r}
+
+Q_por_OBJECTID <- resultado_df %>%
+  group_by(OBJECTID) %>%
+  summarise(Q = sum(prod_pipj_dij, na.rm = TRUE), .groups = "drop")
+
+```
+
+Se visualizan los resultados espacialmente
+
+```{r}
+
+# Unir los valores de Q con el objeto espacial
+datos_sf_q <- datos_sf_wgs84 %>%
+  left_join(Q_por_OBJECTID, by = "OBJECTID")
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+ggplot(datos_sf_q) +
+  geom_sf(aes(fill = Q), color = "gray30") +
+  scale_fill_gradientn(colours = pal, na.value = "white") + 
+  labs(
+    title = "Entropía cuadrática Q por unidad cartográfica de suelos",
+    fill = "Entropía Q"
+  ) +
+  theme_minimal()
+
+```
