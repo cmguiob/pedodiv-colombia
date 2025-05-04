@@ -14,6 +14,7 @@ Este cuaderno de código permite la carga y procesamiento de datos del los mapas
 A continuación se cargan las librería necesarias
 
 ```{r confi, include = FALSE}
+
 # Para renderizar el documento
 knitr::opts_chunk$set(echo = TRUE)
 
@@ -22,14 +23,58 @@ if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
 pacman::p_load(char = c("httr", "jsonlite", "sf", "dplyr", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+
 ```
 
-## Including Plots
+## Carga de datos
 
-You can also embed plots, for example:
+A continuación se carga un subconjunto de datos para pilotear los análisis. Los datos se solicitan al IGAC via API. El acceso a estos se encuentra en el Hub de ArcGIS, seleccionando el conjunto de datos con Mapserver. [Ejemplo: enlace a datos del Vichada](https://hub.arcgis.com/maps/25fd261fde5c4641b6adfae4e1c4a779/about)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+Una vez se abre cualquiera de los enlces para WMS o WFS se puede acceder al total de datos del IGAC desde la [raiz de la URL](https://mapas.igac.gov.co/server/rest/services/agrologia)
+
+Se crean vectores de caracteres para las URL par alos distintos departamentos:
+
+```{r build_url, echo=FALSE}
+
+url_datos <- "https://mapas.igac.gov.co/server/rest/services/agrologia/mapageneraldesuelosdepartamentodevichada/MapServer"
+
+# Se desagrega la url básica en sus componentes
+url <- httr::parse_url(url_datos)
+
+layer_id <- "0"
+
+url$path <- paste(url$path, layer_id, "query", sep = "/")
+
+# Se agregan componentes a la URL para solicitud de información
+url$query <- list(
+    where = "1=1", # para recuperar todos los features
+    outFields = "OBJECTID, UCS, PAISAJE, CLIMA, COMPONENTES_TAXONOMICOS, PERFIL, PORCENTAJE", # para recuperar estos campos
+    returnGeometry = "true", # retorna geometrias
+    f = "geojson"
+) # retorna formato geojson
+
+# Se construye la url
+url_solicitud <- httr::build_url(url)
+
+
+print(url_solicitud)
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Luego se hace una solicitud GET a la API y se verifica la respuesta: Status 200 quiere decir exitoso. Status 503 que el servidor no está disponible, puede ser temporal. 
+
+```{r get_request}
+# Para recuperar los datos espaciales se usa la librería sf
+respuesta <- httr::GET(url_solicitud)
+
+# Se examina la respuesta
+print(respuesta)
+```
+
+A continuación se extraen usando la librería `sf`y se define el sistema de coordenadas de referencia con base en la información suministrada en la url general que proporciona información de las capas.
+
+```{r get_data}
+
+datos_sf_wgs84 <- sf::st_read(url_solicitud, quiet = TRUE)
+
+```
