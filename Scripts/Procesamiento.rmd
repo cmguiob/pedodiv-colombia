@@ -1,0 +1,35 @@
+---
+title: "Untitled"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Este cuaderno de código permite la carga y procesamiento de datos del los mapas de suelos de Colombia a escala 1:100.000 del IGAC. El producto final del script es un conjunto de datos con las variables necesarias para hacer cálculos de pedodiversidad.
+
+## Configuración
+
+A continuación se cargan las librería necesarias
+
+```{r confi, include = FALSE}
+# Para renderizar el documento
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c("httr", "jsonlite", "sf", "dplyr", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
