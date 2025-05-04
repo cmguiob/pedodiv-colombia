@@ -18,8 +18,8 @@ Este estudio responde a la pregunta, ¿cómo ocurren espacialmente y se relacion
 
 ### Contenido del repositorio (en proceso)
 - [Presentación del proyecto](https://cmguiob.github.io/pedodiv-colombia/Slides/Slides_Pedodiversidad-Colombia#/pedodiversidad-en-colombia)
-- Conjunto de datos (para pruebas) de UCS
 - Script (R) para la carga masiva de datos de UCS via API
+- Script (R) para el preprocesamiento de datos
 - Script (js) para la carga de datos de elevación digital desde GEE
 - Script (R) para la estimación de métricas de pedodiversidad 
 - Script (R) para el análisis geoespacial de la pedodiversidad
