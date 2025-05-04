@@ -75,11 +75,7 @@ Una vez se obtiene la respuesta con status 200, se procede a extraer lso datos u
 
 ```{r get_data}
 
-# el id aparece en la URL del archivo
-archivo_drive <- drive_download(file = as_id("1ltc0txG3RIUVr67lvIwTv_DBO6YVnzP4"), overwrite = TRUE)
-
-
-
+datos_sf_wgs84 <- sf::st_read(url_solicitud, quiet = TRUE)
 ```
 
 Se verifica visualmente la carga
