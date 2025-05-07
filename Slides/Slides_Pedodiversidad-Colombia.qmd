@@ -63,7 +63,7 @@ Fuente: Instagram @serviciogeologicocolombiano (2024) *¿Sabes qué es la geodiv
 
 ## 
 ### Objetivos y alcances
-1. Analizar pedodirsidad
+1. Analizar pedodiversidad
 2. Cuantificar distribución (heterogeneidad, dependencia)
 3. Relacionar la distribución de diversidad de suelos y geoformas
 
