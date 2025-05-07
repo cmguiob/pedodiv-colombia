@@ -53,11 +53,36 @@ Fuente: Instagram @serviciogeologicocolombiano (2024) *¿Sabes qué es la geodiv
 :::
 
 
-## {.samller}
-#### Colombia es un país biodiverso, pero no sabemos que tan pedodiverso. ¿Qué se puede hacer?
+## 
+
+<br>  
+
+<br>  
+
+### ¿Cómo se distribuyen espacialmente la diversidad de suelos y geoformas en Colombia y cómo se relacionan entre si?
+
+## 
+### Objetivos y alcances
+1. Analizar pedodirsidad
+2. Cuantificar distribución (heterogeneidad, dependencia)
+3. Relacionar la distribución de diversidad de suelos y geoformas
+
+## {.smaller}
+### ¿Con qué datos?
 
 ![](250430_PRESENTACION1_Metodos-01.png)
 <span style="font-size:0.4em">Rossiter et al. (2017), Daly et al. (2018), Ibañez & Pfeiffer 2023</span>
+
+
+## {.smaller}
+
+### Referencias metodológicas
+- Minasny et al. (2010). Global pedodiversity, taxonomic distance, and the World Reference Base
+- Rocchini et al (201). Measuring Rao’s Q diversity index from remote sensing: An open source solution
+- Rossiter et al. (2017). Accounting for taxonomic distance in accuracy assessmentof soil class predictions
+- Anselin (1995): Local Indicators of Spatial Association—LISA
+
+
 
 
 
