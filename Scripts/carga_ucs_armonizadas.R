@@ -54,8 +54,7 @@ descargar_gpkg_curl <- function(zenodo_url) {
     capa = capa_nombre
   ))
   
-  
-  return(ruta_local)
+
 }
 
 
