@@ -1,0 +1,73 @@
+---
+title: "Procesamiento indice Rao a nivel nacional"
+output: github_document
+---
+
+Este cuaderno permite 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Este cuaderno de código raliza el procesamiento de datos del mapa de unidades cartográficas de suelos de Colombia a escala 1:100.000 del IGAC, el cual consta de 72903 entradas (multipoligonos). El producto final del script es un conjunto de datos con el índice de pedodiversidad de rao por polígono para toda Colombia. La carga se realiza ejecutando un script externo via ´source´.
+
+## Configuración
+
+A continuación se cargan las librería necesarias
+
+```{r confi, include = FALSE}
+
+# Para renderizar el documento
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c("httr", "sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+
+```
+
+## Carga de datos
+
+```{r}
+#Load the functions and data loading logic 
+source("carga_ucs_armonizadas.R")
+```
+
+Se verifica visualmente la carga. En est caso, para ilustrar las áreas.
+
+```{r check_visually}
+
+#Se visualizan datos geográficamente (edad, sin leyenda)
+ggplot2::ggplot(ucs_sf) +
+  geom_sf(aes(fill = AREA_HA)) 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

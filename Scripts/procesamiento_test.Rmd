@@ -1,19 +1,11 @@
 ---
-title: "Untitled"
-output: github_document
+title: "Piloto procesamiento"
+output: html_notebook
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
+Este cuaderno de código ejemplifica el procesamiento de datos de los mapas de unidades cartográficas de suelos de Colombia a escala 1:100.000 del IGAC. El producto final del script es un conjunto de datos con el índice de pedodiversidad de rao por polígono para un área de prueba. El conjunto de datos de prueba corresponde al departamento del Vichada, que tiene 9222 entradas (polígonos).
 
-Este cuaderno de código permite la carga y procesamiento de datos del los mapas de suelos de Colombia a escala 1:100.000 del IGAC. El producto final del script es un conjunto de datos con las variables necesarias para hacer cálculos de pedodiversidad.
-
-## Configuración
-
-A continuación se cargan las librería necesarias
-
-```{r confi, include = FALSE}
+```{r configurar, include=FALSE}
 
 # Para renderizar el documento
 knitr::opts_chunk$set(echo = TRUE)
@@ -22,73 +14,88 @@ knitr::opts_chunk$set(echo = TRUE)
 if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
-pacman::p_load(char = c("httr", "googledrive", "jsonlite", "sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+pacman::p_load(char = c("httr", "jsonlite", "sf", "dplyr", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson", "patchwork"))
 
 ```
 
-## Carga de datos
+## 1. Carga de datos 
 
-A continuación se carga un subconjunto de datos para pilotear los análisis. Los datos se solicitan al IGAC via API. El acceso a estos se encuentra en el Hub de ArcGIS, seleccionando el conjunto de datos con Mapserver. [Ejemplo: enlace a datos del Vichada](https://hub.arcgis.com/maps/25fd261fde5c4641b6adfae4e1c4a779/about)
+A continuación se cargan los datos via API. El acceso paa los datos de IGAC se encuentra en el Hub de ArcGIS, seleccionando el conjunto de datos con Mapserver. Por ejemplo:
 
-Una vez se abre cualquiera de los enlces para WMS o WFS se puede acceder al total de datos del IGAC desde la [raiz de la URL](https://mapas.igac.gov.co/server/rest/services/agrologia)
+[Enlace datos Vichada](https://hub.arcgis.com/maps/25fd261fde5c4641b6adfae4e1c4a779/about)
+
+Una vez se abre cualquiera de los enlces para WMS o WFS se puede acceder al total de datos del IGAC desde la raiz de la URL 
+
+[URL para serivcios API IGAC](https://mapas.igac.gov.co/server/rest/services/agrologia)
 
 Se crean vectores de caracteres para las URL par alos distintos departamentos:
 
-```{r build_url, echo=FALSE}
+```{r}
 
-url_datos <- "https://mapas.igac.gov.co/server/rest/services/agrologia/mapageneraldesuelosdepartamentodevichada/MapServer"
+url_vichada <- "https://mapas.igac.gov.co/server/rest/services/agrologia/mapageneraldesuelosdepartamentodevichada/MapServer"
+
+```
+
+
+A continuación se construyen la URL para hacer el request con base en los parámetros de query definidos. Los mapas del IGAC están estructurados en una sola capa (layer = 0). 
+
+
+```{r query}
 
 # Se desagrega la url básica en sus componentes
-url <- httr::parse_url(url_datos)
+url <- httr::parse_url(url_vichada)
 
 layer_id <- "0"
 
 url$path <- paste(url$path, layer_id, "query", sep = "/")
 
 # Se agregan componentes a la URL para solicitud de información
-url$query <- list(
-    where = "1=1", # para recuperar todos los features
-    outFields = "OBJECTID, UCS, PAISAJE, CLIMA, COMPONENTES_TAXONOMICOS, PERFIL, PORCENTAJE", # para recuperar estos campos
-    returnGeometry = "true", # retorna geometrias
-    f = "geojson"
-) # retorna formato geojson
+url$query <- list(where = "1=1", # para recuperar todos los features
+                  outFields = "OBJECTID, UCS, PAISAJE, CLIMA, COMPONENTES_TAXONOMICOS, PERFIL, PORCENTAJE", #para recuperar estos campos
+                  returnGeometry = "true", #retorna geometrias
+                  f = "geojson") #retorna formato geojson
 
 # Se construye la url
 url_solicitud <- httr::build_url(url)
 
 
 print(url_solicitud)
-
 ```
 
-Luego se hace una solicitud GET a la API y se verifica la respuesta: Status 200 quiere decir exitoso. Status 503 que el servidor no está disponible, puede ser temporal. 
+Luego se hace una solicitud GET a la API. Para estos datos no se necesita un token para el consumo REST. Se examina la respuesta: status 200 quiere decir exitoso; status 503 que el servidor no está disponible, puede ser temporal. 
 
-```{r get_request}
+```{r url}
+
 # Para recuperar los datos espaciales se usa la librería sf
 respuesta <- httr::GET(url_solicitud)
 
-# Se examina la respuesta
+#Se examina la respuesta
 print(respuesta)
 ```
 
-Una vez se obtiene la respuesta con status 200, se procede a extraer lso datos usando la librería `sf`.
+A continuación se extraen usando la librería `sf`y se define el sistema de coordenadas de referencia con base en la información suministrada en la documentación API del IGAC.
 
-```{r get_data}
+```{r carga_sf}
 
+# Para recuperar los datos espaciales se usa la librería sf
 datos_sf_wgs84 <- sf::st_read(url_solicitud, quiet = TRUE)
+
 ```
 
 Se verifica visualmente la carga
 
-```{r check_visually}
-
+```{r}
 #Se visualizan datos geográficamente (edad, sin leyenda)
-ggplot2::ggplot(datos_sf_wgs84) +
+plot_ucs_vichada <- ggplot2::ggplot(datos_sf_wgs84) +
   geom_sf(aes(fill = UCS)) +
+labs(
+    title = "Unidades Cartográficas de Suelos",
+    fill = "ID"
+  ) +
+  theme_minimal() +
   theme(legend.position = "none")
 
 ```
-
 ## 2. Procesamiento
 
 ### 2.1 Extracción de prefijos taxonómicos
@@ -97,7 +104,7 @@ Seleccionamos datos que tengan formato válido.
 
 ```{r filter_valid_components}
 
-datos_componentes_validos <- datos_sf_wgs84 %>%
+datos_componentes_validos <- datos_sf_wgs84 |>
   # Extrae la parte que viene después de ":" (si existe)
   mutate(
     #quita todo lo que está antes (y justo después) de los dos puntos
@@ -127,7 +134,9 @@ datos_componentes_validos <- datos_sf_wgs84 %>%
 
 ```
 
-Se inspeccionan los datos excluidos. Esto se tiene que reevaluar, para que no queden huecos, no deberian quitarse, sino procesarse distinto.
+Se inspeccionan los datos excluidos. 
+
+*Esto se tiene que reevaluar, para que no queden huecos, no deberian quitarse, sino procesarse distinto.*
 
 ```{r check_excluded_components}
 
@@ -138,10 +147,10 @@ datos_excluidos <- datos_sf_wgs84 |>
 
 ```
 
-
 Se verifica que las proporciones no superen el número de taxones reportados en cada UCS.
 
 ```{r check_percentage}
+
 datos_con_error <- datos_componentes_validos %>%
   mutate(
     componentes = str_remove(COMPONENTES_TAXONOMICOS, "^[^:]+:\\s*"),
@@ -155,8 +164,6 @@ datos_con_error <- datos_componentes_validos %>%
 # Mostrar las UCS problemáticas
 print(datos_con_error %>% select(OBJECTID, COMPONENTES_TAXONOMICOS, PORCENTAJE))
 ```
-
-
 
 A continuación, se separan los tipos de suelo dentro de la UCS en formato largo. Se corrigen porcentajes.
 
@@ -208,8 +215,6 @@ datos_largos <- datos_componentes_validos %>%
 
 
 ```
-
-
 Se corrigen errores de ortografía conocidos (estos salen luego del paso que sigue, y se vuelve un paso antes para corregirlos)
 
 ```{r correct_spelling}
@@ -250,7 +255,6 @@ datos_niveles_limpios <- datos_niveles |>
   filter(!is.na(orden) | !is.na(suborden) | !is.na(gran_grupo) | !is.na(subgrupo))
 
 ```
-
 
 A continuación se hacen ajustes en los datos y se crea una función para poder extraer prefijos de los niveles jerárquicos de los nombres. Se utiliza la librería SoilTaxonomy.
 
@@ -362,7 +366,7 @@ comparar_prefijos <- function(row) {
 
 ```
 
-Se aplica funcación para  comparar fila por fila para calcular dij y pipj*dij
+Se aplica función para  comparar fila por fila para calcular dij y pipj*dij
 
 ```{r}
 
@@ -412,7 +416,7 @@ datos_sf_q <- datos_sf_wgs84 %>%
 #Paleta de colores
 pal <- wes_palette("Zissou1", 100, type = "continuous")
 
-ggplot(datos_sf_q) +
+plot_rao_vichada <- ggplot(datos_sf_q) +
   geom_sf(aes(fill = Q), color = "gray30") +
   scale_fill_gradientn(colours = pal, na.value = "white") + 
   labs(
@@ -422,3 +426,18 @@ ggplot(datos_sf_q) +
   theme_minimal()
 
 ```
+
+Se crea el mosaico gráfico para exportar
+
+```{r}
+
+plot_mosaico_rao_vichada <- plot_ucs_vichada + plot_rao_vichada
+
+plot_mosaico_rao_vichada
+```
+```{r export_plot}
+
+# Funcion para exportar gráfica plot_mosaico_rao_vichada
+
+```
+
