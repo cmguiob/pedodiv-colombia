@@ -62,6 +62,22 @@ ggplot2::ggplot() +
 
 ```
 
+
+## Pre-procesamiento
+
+Se estandarizan nombres de columnas
+
+```{r}
+# ucs_sf
+names(ucs_sf)[names(ucs_sf) == "geom"] <- "geometry"
+ucs_sf <- sf::st_as_sf(as.data.frame(ucs_sf), sf_column_name = "geometry")
+
+# departamento_1_sf
+names(departamentos_sf)[names(departamentos_sf) == "SHAPE"] <- "geometry"
+departamentos_sf <- sf::st_as_sf(as.data.frame(departamentos_sf), sf_column_name = "geometry")
+
+```
+
 Seleccionamos un departamento para trabajar. Se seleccionan -mas no se recortan- las ucs que se cruzan con este departamento.
 
 ```{r}
@@ -69,11 +85,21 @@ Seleccionamos un departamento para trabajar. Se seleccionan -mas no se recortan-
 departamento_1_sf <- departamentos_sf[departamentos_sf$DeNombre == "Vichada", ]
 
 # Selección de polígonos ucs dentro de departamento
-ucs_clip <- st_filter(ucs_sf, departamento_1_sf)
+ucs_departamento_sf <- st_filter(ucs_sf, departamento_1_sf)
 
 ```
 
 
+Se visualiza la sleción
+
+```{r}
+
+ggplot2::ggplot() +
+  geom_sf(data = ucs_departamento_sf, aes(fill = factor(UCSuelo))) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
 
 
 
