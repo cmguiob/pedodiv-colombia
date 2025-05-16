@@ -32,7 +32,7 @@ pacman::p_load(char = c("httr", "sf", "dplyr", "ggplot2", "here", "tidyr", "stri
 
 ```{r}
 # Load the functions and data loading logic
-source(here::here("Scripts", "carga_ucs_armonizadas.R"))
+source(here::here("Scripts", "carga_ucs_armonizadas.R"), encoding = "UTF-8")
 ```
 
 Se verifica visualmente la carga. En est caso, para ilustrar las áreas.

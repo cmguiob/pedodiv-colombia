@@ -27,7 +27,7 @@ descargar_gpkg_curl <- function(zenodo_url) {
   options(timeout = max(600, getOption("timeout")))
   
   # Descargar el archivo usando 'curl'
-  message("⬇️ Descargando archivo desde Zenodo con método 'curl'...")
+  message("Descargando archivo desde Zenodo con método 'curl'...")
   utils::download.file(
     url = zenodo_url,
     destfile = ruta_local,
@@ -38,16 +38,16 @@ descargar_gpkg_curl <- function(zenodo_url) {
   # Reportar tamaño si es posible
   tamaño <- suppressWarnings(file.info(ruta_local)$size)
   if (!is.na(tamaño)) {
-    message("📦 Tamaño del archivo descargado: ", round(tamaño / 1e6, 1), " MB")
+    message("Tamaño del archivo descargado: ", round(tamaño / 1e6, 1), " MB")
   } else {
-    message("⚠️ No se pudo verificar el tamaño, pero la descarga fue completada.")
+    message("No se pudo verificar el tamaño, pero la descarga fue completada.")
   }
   
   # Detectar el nombre de la primera capa disponible
   capa_nombre <- sf::st_layers(ruta_local)$name[1]
-  message("📚 Nombre de la capa encontrada: ", capa_nombre)
+  message("Nombre de la capa encontrada: ", capa_nombre)
   
-  message("✅ Archivo descargado y guardado en: ", ruta_local)
+  message("Archivo descargado y guardado en: ", ruta_local)
   
   return(list(
     ruta = ruta_local,
@@ -85,7 +85,7 @@ ucs_sf <- sf::st_read(ruta_gpkg, layer = nombre_capa, quiet = TRUE)
 
 # Reportar CRS
 crs_obj <- sf::st_crs(ucs_sf)
-message("🌐 CRS detectado: ", crs_obj$input, " (EPSG:", crs_obj$epsg, ")")
+message("CRS detectado: ", crs_obj$input, " (EPSG:", crs_obj$epsg, ")")
 
 
 # ------------------------
