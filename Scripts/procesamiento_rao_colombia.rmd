@@ -24,26 +24,63 @@ knitr::opts_chunk$set(echo = TRUE)
 if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
-pacman::p_load(char = c("httr", "sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+pacman::p_load(char = c("sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
 
 ```
 
 ## Carga de datos
 
-```{r}
-# Load the functions and data loading logic
+Primero se corre un script externo para carga de datos masiva de UCS de Colombia desde Zenodo, Puede tardar algunos minutos.
+```{r load_smu}
+# Corre script externo 
 source(here::here("Scripts", "carga_ucs_armonizadas.R"), encoding = "UTF-8")
+
+```
+
+Luego se cargan los departamentos de Colombia
+
+```{r load_departments}
+# Define ruta y nombre de capa de geopackage de departamentos
+deptos_ruta <- here("Data", "Departamentos_IGAC_Abril_2025.gpkg")
+capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]
+
+# Carga geopackage de dpartamentos
+departamentos_sf <- sf::st_read(
+  deptos_ruta,
+  layer = capa_nombre_deptos,
+  quiet = TRUE
+)
+
+# Verifica CRS de departamentps
+crs_deptos <- sf::st_crs(departamentos_sf)
+message("CRS detectado: ", crs_deptos$input, " (EPSG:", crs_deptos$epsg, ")")
 ```
 
 Se verifica visualmente la carga. En est caso, para ilustrar las áreas.
 
 ```{r check_visually}
 
-#Se visualizan datos geográficamente (edad, sin leyenda)
-ggplot2::ggplot(ucs_sf) +
-  geom_sf(aes(fill = AREA_HA)) 
+# Se visualizan datos geográficamente (edad, sin leyenda)
+ggplot2::ggplot() +
+  #geom_sf(data = ucs_sf, aes(fill = AREA_HA)) +
+  geom_sf(data = departamentos_sf, fill = NA, color = "red", size = 0.5) +
+  theme_minimal()
 
 ```
+
+Seleccionamos un departamento para trabajar. Se seleccionan -mas no se recortan- las ucs que se cruzan con este departamento.
+
+```{r}
+# Selección de departamento
+departamento_1_sf <- departamentos_sf[departamentos_sf$DeNombre == "Vichada", ]
+
+# Selección de polígonos ucs dentro de departamento
+ucs_clip <- st_filter(ucs_sf, departamento_1_sf)
+
+```
+
+
+
 
 
 
