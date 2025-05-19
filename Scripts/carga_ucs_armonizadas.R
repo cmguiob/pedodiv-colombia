@@ -63,7 +63,7 @@ descargar_gpkg_curl <- function(zenodo_url) {
 # ------------------------
 
 # URL Zenodo con '?download=1'
-zenodo_url <- "https://zenodo.org/records/15391254/files/Mapa_Geopedologico_11092014.gpkg?download=1"
+zenodo_url <- "https://zenodo.org/records/15460582/files/igac_mapa_geopedologico.gpkg?download=1"
 
 # ------------------------
 # 3. DESCARGA Y DETECCIÓN DE CAPA

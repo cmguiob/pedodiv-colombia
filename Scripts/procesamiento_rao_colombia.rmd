@@ -31,6 +31,19 @@ source(here::here("Scripts", "carga_ucs_armonizadas.R"), encoding = "UTF-8")
 
 ```
 
+Se verifica visualmente la carga. En est caso, para ilustrar las áreas.
+
+```{r check_visually}
+
+# Se visualizan datos geográficamente (edad, sin leyenda)
+ggplot2::ggplot() +
+  geom_sf(data = ucs_sf, aes(fill = AREA_HA), color = NA) +
+  scale_fill_viridis_c(name = "Área (Ha)", trans = "log2")+ 
+  theme_minimal()
+
+```
+
+
 Luego se cargan los departamentos de Colombia
 
 ```{r load_departments}
@@ -49,57 +62,105 @@ departamentos_sf <- sf::st_read(
 crs_deptos <- sf::st_crs(departamentos_sf)
 message("CRS detectado: ", crs_deptos$input, " (EPSG:", crs_deptos$epsg, ")")
 ```
-
-Se verifica visualmente la carga. En est caso, para ilustrar las áreas.
-
-```{r check_visually}
-
-# Se visualizan datos geográficamente (edad, sin leyenda)
-ggplot2::ggplot() +
-  #geom_sf(data = ucs_sf, aes(fill = AREA_HA)) +
-  geom_sf(data = departamentos_sf, fill = NA, color = "red", size = 0.5) +
-  theme_minimal()
-
-```
-
-
-## Pre-procesamiento
-
-Se estandarizan nombres de columnas
+Se verifica visualmente la carga de departamentos
 
 ```{r}
-# ucs_sf
+
+ggplot2::ggplot() +
+  geom_sf(data = departamentos_sf, aes(fill = DeCodigo), color = NA) +
+  guides(fill = guide_legend(title="Código departamento")) +
+  theme_minimal()
+```
+
+## Pre-procesamiento espacial
+
+A continuación enriquecemos los datos de ucs adicionando la columna de departamento. Esto nos permite adicionalmente hacer filtrado espacial para trabajar en modo piloto por departamento, abordando así errores de forma gradual. 
+
+Primero, se estandarizan nombres de columnas y se crean identificadores únicos para los datos.
+
+```{r}
+# ucs_sf pasa de "geom" a "geometry"
 names(ucs_sf)[names(ucs_sf) == "geom"] <- "geometry"
 ucs_sf <- sf::st_as_sf(as.data.frame(ucs_sf), sf_column_name = "geometry")
 
-# departamento_1_sf
+#se crean ids para las ucs
+ucs_sf <- ucs_sf |>
+  mutate(id_creado = row_number())
+
+# departamento_1_sf pasa de "SHAPE" a "geometry"
 names(departamentos_sf)[names(departamentos_sf) == "SHAPE"] <- "geometry"
 departamentos_sf <- sf::st_as_sf(as.data.frame(departamentos_sf), sf_column_name = "geometry")
 
 ```
 
-Seleccionamos un departamento para trabajar. Se seleccionan -mas no se recortan- las ucs que se cruzan con este departamento.
+Hacemos un join espacial para adicionar la columna de departamentos a los datos de ucs. Dado que algunas ucs pueden estar en varios departamentos, se aplica un criterio simple para etiquetar la ucs con el departamento con el que se intersecta primero en los datos.
+
+```{r}
+
+# Aseguramos que ambos datasets tengan la misma proyección
+ucs_sf <- st_transform(ucs_sf, st_crs(departamentos_sf))
+
+# Hacemos el join espacial
+ucs_deptos_sf <- st_join(ucs_sf, departamentos_sf |> select(DeNombre))
+
+# Eliminamos posibles duplicados: quedamos con una fila por unidad
+ucs_deptos_sf <- ucs_deptos_sf %>%
+  group_by(id_creado) %>%
+  slice(1) %>%
+  ungroup()
+
+```
+
+Verificamos visualmente que todas las ucs tengan un departamento asignado
+
+```{r}
+ggplot2::ggplot() +
+  geom_sf(data = ucs_deptos_sf, aes(fill = factor(DeNombre)), color = NA) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+Se observa que algunos departamentos quedan discontínuos Seleccionamos un departamento para trabajar de forma piloto
 
 ```{r}
 # Selección de departamento
-departamento_1_sf <- departamentos_sf[departamentos_sf$DeNombre == "Vichada", ]
+ucs_depto_piloto_sf <- ucs_deptos_sf |>
+  dplyr::filter(DeNombre == "Antioquia") |>
+  tidyr::drop_na()
 
-# Selección de polígonos ucs dentro de departamento
-ucs_departamento_sf <- st_filter(ucs_sf, departamento_1_sf)
+# Número de ucs únicas en el departamento
+n_ucs_depto_piloto <- ucs_depto_piloto_sf |> select(UCSuelo) |> st_drop_geometry() |> distinct() |> count()
+
+txto_n_ucs_depto_piloto <- paste("ucs = ", n_ucs_depto_piloto)
 
 ```
 
-
-Se visualiza la sleción
+Se visualiza la seleción
 
 ```{r}
 
-ggplot2::ggplot() +
-  geom_sf(data = ucs_departamento_sf, aes(fill = factor(UCSuelo))) +
+
+bbox <- st_bbox(ucs_depto_piloto_sf)
+
+ggplot() +
+  geom_sf(data = ucs_depto_piloto_sf, aes(fill = factor(UCSuelo)), color = NA) +
+  annotate("text", 
+           x = bbox["xmax"] - 0.01 * (bbox["xmax"] - bbox["xmin"]),
+           y = bbox["ymax"] - 0.01 * (bbox["ymax"] - bbox["ymin"]),
+           label = txto_n_ucs_depto_piloto,
+           hjust = 1, vjust = 1, size = 5, color = "black") +
   theme_minimal() +
-  theme(legend.position = "none")
+  theme(legend.position = "none") +
+  labs(x = NULL, y = NULL)
+
+#guarda el último gráfico generado
+ggsave(here("Figures","mapa_suelos.png"), width = 10, height = 8, dpi = 300)
 
 ```
+### Procesamiento
+
+A continuación se realiza el procesamiento para obtener las métricas de pedodiversidad
 
 
 
