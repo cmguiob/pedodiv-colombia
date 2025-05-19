@@ -5,7 +5,7 @@ output: github_document
 
 Este cuaderno de código raliza el procesamiento de datos del mapa de unidades cartográficas de suelos de Colombia a escala 1:100.000 del IGAC, el cual consta de 72903 entradas (multipoligonos). El producto final del script es un conjunto de datos con el índice de pedodiversidad de rao por polígono para toda Colombia. La carga se realiza ejecutando un script externo via ´source´.
 
-## Configuración
+## 1. Configuración
 
 A continuación se cargan las librería necesarias
 
@@ -18,11 +18,11 @@ knitr::opts_chunk$set(echo = TRUE)
 if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
-pacman::p_load(char = c("sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "wesanderson"))
+pacman::p_load(char = c("sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "qs","wesanderson", "patchwork"))
 
 ```
 
-## Carga de datos
+## 2. Carga de datos
 
 Primero se corre un script externo para carga de datos masiva de UCS de Colombia desde Zenodo, Puede tardar algunos minutos.
 ```{r load_smu}
@@ -38,8 +38,11 @@ Se verifica visualmente la carga. En est caso, para ilustrar las áreas.
 # Se visualizan datos geográficamente (edad, sin leyenda)
 ggplot2::ggplot() +
   geom_sf(data = ucs_sf, aes(fill = AREA_HA), color = NA) +
-  scale_fill_viridis_c(name = "Área (Ha)", trans = "log2")+ 
+  scale_fill_viridis_c(name = "Área (Ha)", trans = "log10")+ 
   theme_minimal()
+
+#guarda el último gráfico generado
+ggsave(here("Figures","ucs_area_log10.png"), width = 10, height = 8, dpi = 300)
 
 ```
 
@@ -48,7 +51,7 @@ Luego se cargan los departamentos de Colombia
 
 ```{r load_departments}
 # Define ruta y nombre de capa de geopackage de departamentos
-deptos_ruta <- here("Data", "Departamentos_IGAC_Abril_2025.gpkg")
+deptos_ruta <- here("Data", "INPUT_departamentos_IGAC_Abril_2025.gpkg")
 capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]
 
 # Carga geopackage de dpartamentos
@@ -72,7 +75,7 @@ ggplot2::ggplot() +
   theme_minimal()
 ```
 
-## Pre-procesamiento espacial
+## 3. Pre-procesamiento espacial
 
 A continuación enriquecemos los datos de ucs adicionando la columna de departamento. Esto nos permite adicionalmente hacer filtrado espacial para trabajar en modo piloto por departamento, abordando así errores de forma gradual. 
 
@@ -124,6 +127,8 @@ ggplot2::ggplot() +
 Se observa que algunos departamentos quedan discontínuos Seleccionamos un departamento para trabajar de forma piloto
 
 ```{r}
+rm(list = setdiff(ls(), c("ucs_deptos_sf", "ucs_sf")))
+
 # Selección de departamento
 ucs_depto_piloto_sf <- ucs_deptos_sf |>
   dplyr::filter(DeNombre == "Antioquia") |>
@@ -141,41 +146,488 @@ Se visualiza la seleción
 ```{r}
 
 
+# Obtiene la bounding box del objeto espacial
 bbox <- st_bbox(ucs_depto_piloto_sf)
 
-ggplot() +
+# Crea el objeto gráfico
+p_ucs_piloto <- ggplot() +
   geom_sf(data = ucs_depto_piloto_sf, aes(fill = factor(UCSuelo)), color = NA) +
   annotate("text", 
-           x = bbox["xmax"] - 0.01 * (bbox["xmax"] - bbox["xmin"]),
-           y = bbox["ymax"] - 0.01 * (bbox["ymax"] - bbox["ymin"]),
-           label = txto_n_ucs_depto_piloto,
+           x = bbox["xmax"] - 0.01 * (bbox["xmax"] - bbox["xmin"]),  # 1% desde el borde derecho
+           y = bbox["ymax"] - 0.01 * (bbox["ymax"] - bbox["ymin"]),  # 1% desde el borde superior
+           label = txto_n_ucs_depto_piloto,  # Texto que quieres mostrar
            hjust = 1, vjust = 1, size = 5, color = "black") +
   theme_minimal() +
-  theme(legend.position = "none") +
-  labs(x = NULL, y = NULL)
+  theme(
+    legend.position = "none",  # Quita la leyenda
+    axis.title = element_blank(),  # Quita títulos de ejes
+  )
 
-#guarda el último gráfico generado
-ggsave(here("Figures","mapa_suelos.png"), width = 10, height = 8, dpi = 300)
+# Guarda la figura como PNG
+ggsave(
+  filename = here("Figures", "ucs_piloto.png"),
+  plot = p_ucs_piloto,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
 
+#Grafica
+p_ucs_piloto
 ```
-### Procesamiento
+
+## 4. Procesamiento
 
 A continuación se realiza el procesamiento para obtener las métricas de pedodiversidad
 
+### 4.1 Extracción de prefijos taxonómicos
+
+Seleccionamos datos que tengan formato válido.
+
+```{r filter_valid_components}
+
+palabras_problema <- c(
+  "Cuerpo",
+  "Cuerpos",
+  "Misceláneos", 
+  "Misceláneo", 
+  "Afloramientos", 
+  "Afloramiento", 
+  "Vegetacion",
+  "Vegetación", 
+  "Otros", 
+  "Zona",
+  "Zonas",
+  "Roca",
+  "Afloramientos Rocosos",
+  "Misceláneo de playas",
+  "Pantanos y marismas",
+  "Misceláneo arenoso"
+)
+
+datos_subgrupo_validos <- ucs_depto_piloto_sf |>
+  mutate(
+    # Reemplaza en SUBGRUPO la última palabra problemática junto con cualquier coma o espacios antes de ella
+    SUBGRUPO = str_replace(
+      SUBGRUPO,
+      # Patrón regex:
+      # [,\\s]*  -> cero o más comas o espacios justo antes de la palabra final
+      # (palabras_problema separadas por |) -> cualquiera de las palabras de la lista
+      # $ -> que esté al final del texto
+      str_c("[,\\s]*(", str_c(palabras_problema, collapse = "|"), ")$", collapse = ""),
+      ""  # Reemplaza con cadena vacía, es decir, elimina esa parte
+    ),
+    # Extrae la primera palabra del texto ya corregido en SUBGRUPO para usarla en el filtro
+    primer_palabra = word(SUBGRUPO, 1)
+  ) |>
+  # Filtra filas para quedarse solo con aquellas que:
+  # - No tienen primer palabra en la lista problemática, o
+  # - Tienen varios suelos separados por ";"
+  filter(
+    str_trim(SUBGRUPO) != "",  # Quita filas donde SUBGRUPO quedó vacío
+    !primer_palabra %in% palabras_problema |
+    str_detect(SUBGRUPO, ";")
+  ) |>
+  # Elimina la columna auxiliar 'primer_palabra' que ya no se necesita
+  select(-primer_palabra) |>
+  # Quita la geometría del objeto sf para evitar problemas en pasos posteriores
+  sf::st_drop_geometry()
+
+```
+
+Se inspeccionan los datos excluidos. 
+
+*Esto se tiene que reevaluar, para que no queden huecos, no deberian quitarse, sino procesarse distinto.*
+
+```{r check_excluded_components}
+
+# Segundo, filtrar los datos que fueron excluidos
+datos_excluidos <- ucs_depto_piloto_sf |>
+  st_drop_geometry() |>
+  anti_join(datos_subgrupo_validos, by = "id_creado")
+
+```
+
+
+Se verifica que las proporciones no superen el número de taxones reportados en cada UCS. 
+
+```{r check_percentage}
+
+datos_con_error <- datos_subgrupo_validos %>%
+  mutate(
+    #Divide el vector en una lista de partes separadas por ;, ignorando espacios después del ;
+    componentes = str_split(SUBGRUPO, ",\\s*"),
+    porcentajes = str_split(PORCENTAJE, ",\\s*"),
+    #Cuenta cuántos componentes tiene cada elemento de la lista
+    n_componentes = map_int(componentes, length),
+    n_porcentajes = map_int(porcentajes, length)
+  ) %>%
+  # Filtra las filas donde el número de componentes difiere del de porcentajes
+  filter(n_componentes != n_porcentajes)
+
+# Mostrar las UCS problemáticas
+print(datos_con_error %>% select(id_creado, SUBGRUPO, PORCENTAJE))
+
+```
+
+En el bloque anterior se identificaron casos en que el numero de porcentajes y de taxones reportados difiern. También casos en que no se asignan porcentajes (dice "No aplica"), a pesar de haber reportado taxones. En este último caso, se podrían asignar porcentajes en igual proporción a los taxones reportados.
+
+En algunos casos el numero de proporciones son mayores, en otras menores. Son mayores, por ejemplo, en casos en que se removió "Afloramientos Rocosos" y este contaba como proporción. Aunque también ocurre el caso inverso, en que aparecía pero no lo contaban como proporción. En cualquier caso, al no constituir un tipo de suelo, no refleja pedodiversidad.
+
+*ojo, toca ajustar función para que etiquete no solo a los que se les asignó igual proporción, sino también a los que se escalaron*
+
+Se crea una función para corregir porcentajes de acuerdo a estos criterios:
+
+```{r}
+
+corregir_porcentajes <- function(p_string, n_taxones) {
+  # Si el string está vacío, es NA o contiene "No aplica" (sin importar mayúsculas)
+  # asigna porcentajes iguales entre todos los taxones
+  if (is.na(p_string) || p_string == "" || str_detect(p_string, regex("no aplica", ignore_case = TRUE))) {
+    p_num <- rep(100 / n_taxones, n_taxones)
+    es_asignacion_igual <- TRUE
+  } else {
+    # Separa el string por comas y limpia espacios
+    p <- str_trim(str_split(p_string, ",\\s*")[[1]])
+    # Convierte a numérico suprimiendo advertencias (por textos no numéricos)
+    p_num <- suppressWarnings(as.numeric(p))
+
+    # Si todos los valores son NA después de convertir, asigna valores iguales
+    if (all(is.na(p_num))) {
+      p_num <- rep(100 / n_taxones, n_taxones)
+      es_asignacion_igual <- TRUE
+    } else {
+      es_asignacion_igual <- FALSE
+
+      # Si hay un porcentaje de más, elimina el último
+      if (length(p_num) == n_taxones + 1) {
+        p_num <- p_num[1:n_taxones]
+      # Si hay uno de menos, calcula el faltante para completar 100 y lo agrega
+      } else if (length(p_num) == n_taxones - 1) {
+        faltante <- 100 - sum(p_num, na.rm = TRUE)
+        p_num <- c(p_num, faltante)
+      }
+
+      # Si aún no coincide la longitud, devuelve NAs y advierte
+      if (length(p_num) != n_taxones) {
+        warning("Número de porcentajes no coincide con número de taxones")
+        return(list(porcentajes = rep(NA_real_, n_taxones), es_asignacion_igual = es_asignacion_igual))
+      }
+
+      # Escala los porcentajes para que sumen exactamente 100 (preserva proporciones)
+      suma_total <- sum(p_num, na.rm = TRUE)
+      if (!is.na(suma_total) && suma_total != 100 && suma_total > 0) {
+        p_num <- 100 * p_num / suma_total
+      }
+    }
+  }
+
+  # Devuelve lista con los porcentajes corregidos y flag de asignación automática
+  return(list(porcentajes = p_num, es_asignacion_igual = es_asignacion_igual))
+}
+
+```
+
+
+A continuación se procesan los datos para separar componentes
+
+```{r}
+
+datos_largos <- datos_subgrupo_validos %>%
+  # Separa los componentes en listas por ",", ";" o "."
+  mutate(componentes = str_split(SUBGRUPO, ",\\s*|;\\s*|\\.\\s*"),
+         # Cuenta el número de componentes por fila
+         n_componentes = map_int(componentes, length),
+         # Aplica la función corregir_porcentajes que devuelve lista con porcentajes y flag
+         correcciones = map2(PORCENTAJE, n_componentes, corregir_porcentajes),
+         # Extrae los porcentajes corregidos
+         porcentajes = map(correcciones, "porcentajes"),
+         # Extrae el flag que indica asignación automática
+         asignacion_igual = map_lgl(correcciones, "es_asignacion_igual"),
+         # Cuenta los porcentajes corregidos
+         n_porcentajes = map_int(porcentajes, length)) %>%
+  # Filtra filas donde número de componentes y porcentajes coinciden
+  filter(n_componentes == n_porcentajes) %>%
+  # Expande listas de componentes y porcentajes a filas largas
+  unnest(c(componentes, porcentajes)) %>%
+  # Limpia espacios y convierte porcentajes a numérico
+  mutate(nombre_taxonomico = str_trim(componentes),
+         porcentaje = porcentajes) %>%
+  # Selecciona columnas relevantes, incluyendo el flag para seguimiento
+  select(id_creado, nombre_taxonomico, porcentaje, asignacion_igual)
+
+```
+
+Se añaden niveles taxonomicos usando SoilTaxonomy
+
+```{r}
+# Añadir niveles taxonómicos usando SoilTaxonomy
+datos_niveles <- datos_largos %>%
+  mutate(
+    orden = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "order")),
+    suborden = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "suborder")),
+    gran_grupo = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "greatgroup")),
+    subgrupo = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "subgroup"))
+  )
+```
+
+Se hace un chequeo para revisar si algunos nombres no pudieron procesarse. Se filtran los datos con NAs. Esto debido a que posteriormente se crea una función para extraer prefijos, la cual retorna error si hay NAs.
+
+```{r}
+
+datos_NA_niveles <- datos_niveles |>
+  filter(is.na(orden) | is.na(suborden) | is.na(gran_grupo) | is.na(subgrupo))
+
+```
+
+Se corrigen errores de ortografía. Para identificarlos, existe un script externo, que usa la librería ´SoilTaxonomy´ donde se pueden verificar las opciones de subgrupo disponible para el nivel de grupo.
+
+```{r correct_spelling}
+
+correcciones <- c(
+  #Vichada
+  "Oxiaquic" = "Oxyaquic",
+  "Xantic" = "Xanthic",
+  #Antioquia
+  "Fluvaquenti" = "Fluventic",
+  "Fluventicc" = "Fluventic",
+  "Usthorthents" =  "Ustorthents",
+  "Hapludoxs" = "Hapludox",
+  "Kandiudoxs" = "Kandiudox",
+  "Haplofibrist" = "Haplofibrists",
+  "Haplofibristss" = "Haplofibrists")
+
+# Correcciones manuales conocidas (puedes agregar más si aparecen otros errores)
+datos_largos <- datos_largos |>
+  mutate(nombre_taxonomico = str_replace_all(nombre_taxonomico, correcciones))
+```
+
+Se añaden niveles taxonomicos usando SoilTaxonomy
+
+```{r}
+# Añadir niveles taxonómicos usando SoilTaxonomy
+datos_niveles_limpios <- datos_largos %>%
+  mutate(
+    orden = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "order")),
+    suborden = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "suborder")),
+    gran_grupo = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "greatgroup")),
+    subgrupo = map_chr(nombre_taxonomico, ~getTaxonAtLevel(.x, level = "subgroup"))
+  )
+```
+
+A continuación se crea una función para poder extraer prefijos de los niveles jerárquicos de los nombres. Se utiliza la librería SoilTaxonomy.
+
+```{r}
+
+# Tabla de prefijos para órdenes principales (puedes ampliarla)
+prefijos_orden <- tibble::tibble(
+  orden = c("entisols", "inceptisols", "alfisols", "ultisols", "mollisols", "vertisols", "aridisols", "oxisols", "spodosols", "histosols", "andisols", "gelisols"),
+  prefijo_orden = c("ents", "epts", "alfs", "ults", "olls", "erts", "ids", "ox", "ods", "ists", "ands", "els")
+)
+
+# Asocia prefijo de orden a los datos
+datos_niveles_limpios <- datos_niveles_limpios %>%
+  left_join(prefijos_orden, by = "orden")
+
+# Define función para generar el prefijo quitando el string de la jerarquia anterior
+extraer_prefijo_nuevo <- function(nombre_actual, anterior) {
+  if (is.na(nombre_actual) | is.na(anterior)) {
+    return(NA_character_)
+  } else {
+    nombre_minuscula <- tolower(nombre_actual)
+    anterior_minuscula <- tolower(anterior)
+    nuevo_prefijo <- str_remove(nombre_minuscula, fixed(anterior_minuscula))
+    nuevo_prefijo <- str_extract(nuevo_prefijo, "^[a-z]+")
+    return(nuevo_prefijo)
+  }
+}
+
+```
+
+Se extraen prefijos por niveles jerárquicos y se convierten porcentajes a proporciones. 
+
+```{r}
+
+datos_prefijos <- datos_niveles_limpios |>
+  mutate(
+    # El prefijo para suborden se obtiene quitando el prefijo del orden
+    prefijo_suborden = map2_chr(suborden, prefijo_orden, extraer_prefijo_nuevo),
+    # El prefijo para gran grupo se obtiene quitando el suborden
+    prefijo_gran_grupo = map2_chr(gran_grupo, suborden, extraer_prefijo_nuevo),
+    # El prefijo para subgrupo se obtiene quitando el gran grupo
+    prefijo_subgrupo = map2_chr(subgrupo, gran_grupo, extraer_prefijo_nuevo),
+    # convierte a proporción
+    proporcion = porcentaje / 100
+  ) |>
+  group_by(id_creado) |>
+  mutate(ID_INTERNO = row_number()) |>  # identificador único por taxón en cada unidad
+  ungroup() |>
+  select(-porcentaje)
+
+```
+
+### 4.2 Cálculo de distancias taxonómicas
+
+Una vez se tienen los datos procesados, con prefijos taxonómicos separados y proporción por cada tipo de suelo, se procede a calcular distancias taxinómicas e índices.
+
+```{r}
+
+# Crear combinaciones de pares (i, j) correctamente
+pares <- datos_prefijos |>
+  group_by(id_creado) |>
+  summarise(
+    pares = list(tidyr::crossing(ID_1 = ID_INTERNO, ID_2 = ID_INTERNO)),
+    .groups = "drop" #elimina los grupos que se hayan formado 
+  ) |>
+  unnest(pares)
+
+# Ahora unir los datos de cada par i, j
+pares_datos <- pares %>%
+  left_join((datos_prefijos), 
+            by = c("id_creado", "ID_1" = "ID_INTERNO")
+            ) %>%
+  left_join((datos_prefijos), 
+            by = c("id_creado", "ID_2" = "ID_INTERNO"), 
+            suffix = c("_i", "_j"))
+
+```
 
 
 
+Se crea función para comparar prefijos nivel a nivel y calcular d_ij
+
+```{r}
+
+comparar_prefijos <- function(row) {
+  #Junta los prefijos del suelo i en un vector
+  niveles_i <- c(row$prefijo_orden_i, row$prefijo_suborden_i, row$prefijo_gran_grupo_i, row$prefijo_subgrupo_i)
+  #Junta los prefijos del suelo j en un vector
+  niveles_j <- c(row$prefijo_orden_j, row$prefijo_suborden_j, row$prefijo_gran_grupo_j, row$prefijo_subgrupo_j)
+
+  # Validar en qué niveles ambos tienen datos (no NA)
+  niveles_validos <- !is.na(niveles_i) & !is.na(niveles_j)
+  c <- sum(niveles_validos)  # número de niveles comparables
+
+  coincidencias <- niveles_i == niveles_j  # TRUE si coinciden por nivel
+
+  # No contar como coincidencia en subgrupo si es "typic" y los niveles anteriores son distintos
+  if (!is.na(row$prefijo_subgrupo_i) && row$prefijo_subgrupo_i == "typic") {
+    if (!is.na(row$prefijo_gran_grupo_i) && !is.na(row$prefijo_gran_grupo_j) &&
+        row$prefijo_gran_grupo_i != row$prefijo_gran_grupo_j) {
+      coincidencias[4] <- FALSE
+    }
+  }
+
+  x <- sum(coincidencias & niveles_validos)  # número de niveles con coincidencia real
+
+  dij <- if (c == 0) NA_real_ else (c - x) / c  # distancia d_ij
+
+  return(list(dij = dij, c = c, x = x))  # devolver todo como lista
+}
+
+```
+
+Se aplica función para  comparar fila por fila para calcular dij y pipj*dij
+
+```{r}
+
+resultado_df <- pares_datos |>
+  rowwise() |>
+  mutate(
+    resultado = list(comparar_prefijos(cur_data())),
+    dij       = resultado$dij,
+    c         = resultado$c,
+    x         = resultado$x,
+    prod_pipj_dij = proporcion_i * proporcion_j * dij
+  ) |>
+  ungroup() |>
+  select(-resultado,
+         -ID_1,
+         -ID_2,
+         -orden_i,
+         -orden_j, 
+         -suborden_i, 
+         -suborden_j,
+         - gran_grupo_i, 
+         - gran_grupo_j,
+        - subgrupo_i, 
+        - subgrupo_j
+        )  
+
+```
+
+### 4.3 Cálculo de índices de diversidad
+
+A continuación se calcula el índce de diversidad de Rao (Q)
+
+```{r}
+
+Q_por_ID <- resultado_df %>%
+  group_by(id_creado) %>%
+  summarise(
+    Q = sum(prod_pipj_dij, na.rm = TRUE),
+    asignacion_igual_i = first(asignacion_igual_i),  # asume que 'unidad' no varía dentro del grupo
+    .groups = "drop"
+  )
+
+# Une los valores de Q con el objeto espacial
+datos_sf_q <- ucs_depto_piloto_sf %>%
+  left_join(Q_por_ID, by = "id_creado")
+
+# Exporta los datos en formato qs
+qs::qsave(datos_sf_q, here::here("Data", "OUTPUT_rao_piloto_sf.qs"))
 
 
+```
+
+Se visualizan los resultados espacialmente
+
+```{r}
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+p_rao_piloto <- ggplot(datos_sf_q) +
+  geom_sf(aes(fill = Q), color = NA) +
+  scale_fill_gradientn(colours = pal, na.value = "white") + 
+  labs(
+    fill = "Entropía Q"
+  ) +
+  theme_minimal()
+
+# Guarda la figura como PNG
+ggsave(
+  filename = here("Figures", "rao_piloto.png"),
+  plot = p_rao_piloto,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+#Visualiza
+p_rao_piloto
+
+```
+Se crea el mosaico gráfico para exportar
+
+```{r}
+#Se crea mosaico
+p_mosaico_ucs_rao <- p_ucs_piloto + p_rao_piloto
 
 
+# Guardar como imagen
+ggsave(
+  filename = here("Figures", "mosaico_ucs_rao.png"),
+  plot = p_mosaico_ucs_rao,
+  width = 16,
+  height = 8,
+  dpi = 300
+)
 
+#Se visualiza
+p_mosaico_ucs_rao
 
-
-
-
-
-
+```
 
 
 

@@ -153,9 +153,12 @@ Se verifica que las proporciones no superen el número de taxones reportados en 
 
 datos_con_error <- datos_componentes_validos %>%
   mutate(
+    #Elimina todo lo que va antes (e incluyendo) el primer : en una cadena
     componentes = str_remove(COMPONENTES_TAXONOMICOS, "^[^:]+:\\s*"),
+    #Divide el vector en una lista de partes separadas por ;, ignorando espacios después del ;
     componentes = str_split(componentes, ";\\s*"),
     porcentajes = str_split(PORCENTAJE, ",\\s*"),
+    #Cuenta cuántos componentes tiene cada elemento de la lista
     n_componentes = map_int(componentes, length),
     n_porcentajes = map_int(porcentajes, length)
   ) %>%
