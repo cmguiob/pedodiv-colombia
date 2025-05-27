@@ -1,0 +1,166 @@
+---
+title: "Análisis de patrones de puntos de pedodiversidad"
+author: "Carlos Manuel Guío Blanco"
+date: Sys.Date
+output: html_notebook
+
+---
+
+En este cuaderno se presenta un análisis de patrones de puntos de pedodiversidad. Se parte de los resultados del análisis exploratorio (analisis_eda_rao_colombia.Rmd), donde se identificó que que los datos de Q requieren una transformación para su uso óptimo.
+
+## 1. Configuración
+
+A continuación se cargan las librería necesarias
+
+```{r config, include = FALSE}
+
+# Para renderizar el documento
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c(
+  "here", #manejo de rutas
+  "sf", #manipulación de dats espaciales
+  "skimr", #estadisticas
+  "e1071", #estadisticas
+  "dplyr", #procesamiento de data frames
+  "ggplot2",  #graficación
+  "patchwork", #mosaicos gráficos
+  "wesanderson", #paleta de colores
+  "qs" #escribir y leer rápidamente objetos R
+  )
+)
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+# Ajusta tamaño de letra para todo e lscript
+theme(base_size = 14)
+
+```
+
+## 2. Carga de datos
+
+Los datos producto del procesamiento, se han subido a un repositorio de Zenodo. 
+
+```{r carga}
+
+#Carga local sin internet
+ruta_ucs_rao <- here::here("Data", "OUTPUT_rao_andina_sf.qs")
+ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
+
+# Corre script externo
+#source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+
+head(ucs_rao_sf)
+
+```
+
+## 3. Pre-procesamiento
+
+Se prepara la variable para el análisis. Para esto, se calcula Q/A, que en adelante se denomina Qdens, pues representa la densidad de Q por área de cada polígono de UCS. Esta cantidad se  transforman con el log10, pues da la mejor distribución (continua, unimodal, casi centrada).
+
+```{r}
+
+ucs_rao_sf <- ucs_rao_sf |>
+  #Se descartan NAs debido a polígonos que no son suelos
+  tidyr::drop_na(Q) |>
+  
+  mutate(
+    # se deja un mínimo diferente de cero para trabajar con logaritmos
+    Q = case_when(Q == 0 ~ 1e-6, TRUE ~ Q),
+    #Se calcula la densidad de Q
+    Qdens = Q / AREA_HA,
+    log_Qdens = log(Qdens),  # suma pequeño valor para evitar log(0)
+    log_Qdens01 = (log_Qdens - min(log_Qdens, na.rm = TRUE)) /
+                   (max(log_Qdens, na.rm = TRUE) - min(log_Qdens, na.rm = TRUE))
+  )
+
+```
+
+Se verifican las propiedades de los datos
+
+```{r}
+
+# Se transforma a df para usar en skimr
+ucs_rao_df <- sf::st_drop_geometry(ucs_rao_sf)
+
+# Variables de interés
+vars <- c("Q", "AREA_HA", "Qdens", "log_Qdens")
+
+# Estadística descriptiva rápida
+skimr::skim(ucs_rao_df[, vars])
+
+# Tabla resumen con CV, sesgo y curtosis
+stats_summary <- vars |>
+  setNames(vars) |>
+  lapply(function(var) {
+    x <- ucs_rao_df[[var]]
+    x <- x[!is.na(x)]
+    data.frame(
+      variable = var,
+      cv        = sd(x) / mean(x),
+      skewness  = skewness(x, type = 2),     # tipo 2: Fisher (media = 0 para normal)
+      kurtosis  = kurtosis(x, type = 2) - 3  # restar 3 para curtosis "exceso"
+    )
+  }) |>
+  bind_rows()
+
+print(stats_summary)
+
+```
+Se genera un nuevo set de datos, utilizando el umbral máximo
+
+```{r}
+
+#Se definen dos umbrales
+umbral95 <- quantile(ucs_rao_sf$log_Qdens, 0.95, na.rm = TRUE) # percentil 95
+umbral05 <- quantile(ucs_rao_sf$log_Qdens, 0.05, na.rm = TRUE) # percentil 5
+
+
+ucs_rao_sf <- ucs_rao_sf |>
+  mutate(Qdens_hot95 = as.integer(log_Qdens >= umbral95),
+         Qdens_cold5 = as.integer(log_Qdens >= umbral05)) # returna 1 = TRUE, 0 = FALSE
+
+```
+
+Se extraen los centroides
+
+```{r}
+
+```
+
+
+Se visualizan estos mapas
+
+```{r}
+
+#Mapa de Q/A en escala log1'
+p_mapa_logQdens <- ggplot(ucs_rao_sf) +
+  geom_sf(aes(fill = Qdens), color = NA) +
+  scale_fill_gradientn(
+    colours = pal,
+    na.value = "white",
+    trans = "log10",
+    breaks = scales::trans_breaks("log10", function(x) 10^x)
+  ) +
+  labs(title = "Mapa en escala log(Q/A)", fill = "Q/A") +
+  theme_minimal()
+
+p_mapas_Qdens_puntos <- p_mapa_Qdens_hot + p_mapa_Qdens_cold  + plot_layout(ncol = 2, widths = c(1, 1))
+
+p_mapas_Qdens_puntos
+
+#guarda el último gráfico generado
+ggsave(here("Figures","mapas_Qdens_puntos.png"), width = 8, height = 9, dpi = 350)
+
+```
+
+
+## 4. Resumenes estadísticos de puntos
+
+
+
