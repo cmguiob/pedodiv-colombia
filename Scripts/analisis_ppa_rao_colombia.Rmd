@@ -49,11 +49,11 @@ Los datos producto del procesamiento, se han subido a un repositorio de Zenodo.
 ```{r carga}
 
 #Carga local sin internet
-ruta_ucs_rao <- here::here("Data", "OUTPUT_rao_andina_sf.qs")
-ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
+#ruta_ucs_rao <- here::here("Data", "OUTPUT_rao_andina_sf.qs")
+#ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
 
 # Corre script externo
-#source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 head(ucs_rao_sf)
 
@@ -122,14 +122,25 @@ umbral05 <- quantile(ucs_rao_sf$log_Qdens, 0.05, na.rm = TRUE) # percentil 5
 
 
 ucs_rao_sf <- ucs_rao_sf |>
-  mutate(Qdens_hot95 = as.integer(log_Qdens >= umbral95),
-         Qdens_cold5 = as.integer(log_Qdens >= umbral05)) # returna 1 = TRUE, 0 = FALSE
+  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral95),
+         log_Qdens_cold5 = as.integer(log_Qdens <= umbral05)) # returna 1 = TRUE, 0 = FALSE
 
 ```
 
-Se extraen los centroides
+Se extraen los centroides, con marca continua y binaria.
 
 ```{r}
+
+# Asegúrate de que tu objeto es tipo sf
+centroides_sf <- st_centroid(ucs_rao_sf) 
+
+# Añade las marcas (ya calculadas: log_Qdens y hotspot)
+#centroides_sf$log_Qdens <- ucs_rao_sf$log_Qdens
+#centroides_sf$hotspot95  <- ucs_rao_sf$log_Qdens_hot95
+#centroides_sf$coldspot5  <- ucs_rao_sf$log_Qdens_cold5
+
+centroides_hot_sf <- centroides_sf[centroides_sf$log_Qdens_hot95 == 1, ]
+centroides_cold_sf <- centroides_sf[centroides_sf$log_Qdens_cold5 == 1, ]
 
 ```
 
@@ -138,26 +149,87 @@ Se visualizan estos mapas
 
 ```{r}
 
-#Mapa de Q/A en escala log1'
-p_mapa_logQdens <- ggplot(ucs_rao_sf) +
-  geom_sf(aes(fill = Qdens), color = NA) +
-  scale_fill_gradientn(
-    colours = pal,
-    na.value = "white",
-    trans = "log10",
-    breaks = scales::trans_breaks("log10", function(x) 10^x)
+#Defino colores para coldspots y hotspots
+col_hot  <- pal[90]  # color más alto
+col_cold <- pal[10]    # color más bajo
+
+
+p_mapa_centroides_bin <- ggplot() +
+  geom_sf(
+    data = centroides_hot_sf,
+    aes(color = "Hotspots"),
+    alpha = 0.7,
+    size = .8,
   ) +
-  labs(title = "Mapa en escala log(Q/A)", fill = "Q/A") +
-  theme_minimal()
+  geom_sf(
+    data = centroides_cold_sf,
+    aes(color = "Coldspots"),
+    alpha = 0.7,
+    size = 0.8,
+  ) +
+  scale_color_manual(
+    name = NULL,  # sin título de leyenda
+    values = c("Hotspots" = col_hot, "Coldspots" = col_cold),
+    guide = guide_legend(override.aes = list(size = 4))
+  ) +
+  labs(title = "Puntos críticos de densidad de Q") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
 
-p_mapas_Qdens_puntos <- p_mapa_Qdens_hot + p_mapa_Qdens_cold  + plot_layout(ncol = 2, widths = c(1, 1))
+p_mapa_centroides_hot <- ggplot() +
+  geom_sf(
+    data = centroides_hot_sf,
+    aes(color = "Hotspots"),
+    alpha = 0.7,
+    size = .8,
+  ) +
+  scale_color_manual(
+    name = NULL,  # sin título de leyenda
+    values = c("Hotspots" = col_hot),
+    guide = guide_legend(override.aes = list(size = 4))
+  ) +
+  labs(title = "Puntos críticos de densidad de Q") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
 
-p_mapas_Qdens_puntos
+p_mapa_centroides_cold <- ggplot() +
+  geom_sf(
+    data = centroides_cold_sf,
+    aes(color = "Coldspots"),
+    alpha = 0.7,
+    size = 0.8,
+  ) +
+  scale_color_manual(
+    name = NULL,  # sin título de leyenda
+    values = c("Coldspots" = col_cold),
+    guide = guide_legend(override.aes = list(size = 4))
+  ) +
+  labs(title = "Puntos críticos de densidad de Q") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
+
+p_mosaico_puntos_criticos <- p_mapa_centroides_bin + p_mapa_centroides_hot + centroides_cold_sf
 
 #guarda el último gráfico generado
-ggsave(here("Figures","mapas_Qdens_puntos.png"), width = 8, height = 9, dpi = 350)
+ggsave(here("Figures", "mapas_Qdens_puntos_criticos.png"),
+       plot = p_mosaico_puntos_criticos,
+       width = 20,
+       height = 7,
+       dpi = 350)
 
 ```
+
+
+
 
 
 ## 4. Resumenes estadísticos de puntos
