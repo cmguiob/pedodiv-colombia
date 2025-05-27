@@ -7,9 +7,9 @@ Este cuaderno de código raliza el procesamiento de datos del mapa de unidades c
 
 ## 1. Configuración
 
-A continuación se cargan las librería necesarias
+A continuación se cargan las librería necesarias.
 
-```{r confi, include = FALSE}
+```{r config, include = FALSE}
 
 # Para renderizar el documento
 knitr::opts_chunk$set(echo = TRUE)
@@ -18,7 +18,20 @@ knitr::opts_chunk$set(echo = TRUE)
 if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 
 # Se cargan las librerias
-pacman::p_load(char = c("sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "purrr", "SoilTaxonomy", "qs","wesanderson", "patchwork"))
+pacman::p_load(char = c(
+  "here", #manejo de rutas
+  "sf", #manipulación de dats espaciales
+  "tidyr", #limpieza de data frames
+  "dplyr", #procesamiento de data frames
+  "stringr", #procesamiento de texto
+  "purrr",  #funciones de iteración en data frames
+  "SoilTaxonomy", #análisis de taxonomia de suelos
+  "ggplot2",  #graficación
+  "patchwork", #mosaicos gráficos
+  "wesanderson", #paleta de colores
+  "qs" #escribir y leer rápidamente objetos R
+  )
+)
 
 ```
 
@@ -27,7 +40,7 @@ pacman::p_load(char = c("sf", "dplyr", "ggplot2", "here", "tidyr", "stringr", "p
 Primero se corre un script externo para carga de datos masiva de UCS de Colombia desde Zenodo, Puede tardar algunos minutos.
 ```{r load_smu}
 # Corre script externo 
-source(here::here("Scripts", "carga_ucs_armonizadas.R"), encoding = "UTF-8")
+source(here::here("Scripts", "carga_ucs_armonizadas_gpkg.R"), encoding = "UTF-8")
 
 ```
 
@@ -127,11 +140,33 @@ ggplot2::ggplot() +
 Se observa que algunos departamentos quedan discontínuos Seleccionamos un departamento para trabajar de forma piloto
 
 ```{r}
-rm(list = setdiff(ls(), c("ucs_deptos_sf", "ucs_sf")))
+rm(list = setdiff(ls(), c("ucs_deptos_sf", "ucs_sf", "departamentos_sf")))
 
 # Selección de departamento
 ucs_depto_piloto_sf <- ucs_deptos_sf |>
-  dplyr::filter(DeNombre == "Antioquia") |>
+  dplyr::filter(DeNombre %in% c(
+    "Antioquia", 
+    "Atlántico",
+    "Bolívar",
+    "Boyacá",
+    "Caldas",
+    "Cauca",
+    "Cesar",
+    "Chocó", 
+    "Córdoba",
+    "Cundinamarca",
+    "Huila",
+    "La Guajira",
+    "Magdalena",
+    "Nariño",
+    "Norte de Santander",
+    "Quindío",
+    "Risaralda",
+    "Santander", 
+    "Sucre",
+    "Tolima",
+    "Valle del Cauca")
+    ) |>
   tidyr::drop_na()
 
 # Número de ucs únicas en el departamento
@@ -145,36 +180,31 @@ Se visualiza la seleción
 
 ```{r}
 
-
-# Obtiene la bounding box del objeto espacial
-bbox <- st_bbox(ucs_depto_piloto_sf)
-
-# Crea el objeto gráfico
 p_ucs_piloto <- ggplot() +
+  geom_sf(data = departamentos_sf, fill = "gray90", color = "gray90") +
   geom_sf(data = ucs_depto_piloto_sf, aes(fill = factor(UCSuelo)), color = NA) +
   annotate("text", 
-           x = bbox["xmax"] - 0.01 * (bbox["xmax"] - bbox["xmin"]),  # 1% desde el borde derecho
+           x = bbox["xmax"] - 0.7 * (bbox["xmax"] - bbox["xmin"]),  # 70% desde el borde izquierdo
            y = bbox["ymax"] - 0.01 * (bbox["ymax"] - bbox["ymin"]),  # 1% desde el borde superior
-           label = txto_n_ucs_depto_piloto,  # Texto que quieres mostrar
+           label = txto_n_ucs_depto_piloto,
            hjust = 1, vjust = 1, size = 5, color = "black") +
-  theme_minimal() +
+  theme_minimal(base_size = 14) +
   theme(
-    legend.position = "none",  # Quita la leyenda
-    axis.title = element_blank(),  # Quita títulos de ejes
+    legend.position = "none",
+    axis.title = element_blank()
   )
+
 
 # Guarda la figura como PNG
 ggsave(
   filename = here("Figures", "ucs_piloto.png"),
   plot = p_ucs_piloto,
-  width = 10,
-  height = 8,
-  dpi = 300
+  width = 8,
+  height = 10,
+  dpi = 350
 )
-
-#Grafica
-p_ucs_piloto
 ```
+
 
 ## 4. Procesamiento
 
@@ -202,31 +232,48 @@ palabras_problema <- c(
   "Afloramientos Rocosos",
   "Misceláneo de playas",
   "Pantanos y marismas",
-  "Misceláneo arenoso"
+  "Misceláneo arenoso",
+  "Nieves Perpetuas",
+  "No aplica",
+  "Pantanos",
+  "Tierras de carcavas",
+  "Tierra de carcavas",
+  "Nieves",
+  "arenas volcánicas y depósitos piroclásticos",
+  "Misceláneo de cenizas",
+  "Fosa Mina Carbón",
+  "Saladares",
+  "Tierra Relave Carbón"
 )
 
 datos_subgrupo_validos <- ucs_depto_piloto_sf |>
   mutate(
-    # Reemplaza en SUBGRUPO la última palabra problemática junto con cualquier coma o espacios antes de ella
-    SUBGRUPO = str_replace(
+    # regex para eliminar términos problemáticos en cualquier posición dentro de SUBGRUPO:
+    # (?i) -> modo case-insensitive (mayúsc/minúsc no importa)
+    # (^|,\s*) -> inicio del texto (^) o una coma seguida opcionalmente de espacios (", ")
+    # (palabras_problema)-> cualquiera de las palabras/frases listadas, separadas por "|"
+    # (?=,|$) -> lookahead para asegurar que justo después venga una coma o el final de texto 
+    SUBGRUPO = str_remove_all(
       SUBGRUPO,
-      # Patrón regex:
-      # [,\\s]*  -> cero o más comas o espacios justo antes de la palabra final
-      # (palabras_problema separadas por |) -> cualquiera de las palabras de la lista
-      # $ -> que esté al final del texto
-      str_c("[,\\s]*(", str_c(palabras_problema, collapse = "|"), ")$", collapse = ""),
-      ""  # Reemplaza con cadena vacía, es decir, elimina esa parte
+      str_c("(?i)(^|,\\s*)(", str_c(palabras_problema, collapse = "|"), ")(?=,|$)")
     ),
-    # Extrae la primera palabra del texto ya corregido en SUBGRUPO para usarla en el filtro
+    
+    # Limpia espacios duplicados
+    SUBGRUPO = str_squish(SUBGRUPO),
+    # Reemplaza comas consecutivas con una sola coma
+    SUBGRUPO = str_replace_all(SUBGRUPO, ",{2,}", ","),
+    # Elimina comas iniciales o finales sobrantes
+    SUBGRUPO = str_replace_all(SUBGRUPO, "^,\\s*|,\\s*$", "")
+  ) |>
+  mutate(
+    # Extrae la primera palabra para facilitar filtros
     primer_palabra = word(SUBGRUPO, 1)
   ) |>
-  # Filtra filas para quedarse solo con aquellas que:
-  # - No tienen primer palabra en la lista problemática, o
-  # - Tienen varios suelos separados por ";"
   filter(
-    str_trim(SUBGRUPO) != "",  # Quita filas donde SUBGRUPO quedó vacío
-    !primer_palabra %in% palabras_problema |
-    str_detect(SUBGRUPO, ";")
+    # Filtra filas con SUBGRUPO no vacío y que no comiencen con palabra problemática,
+    # o que contengan múltiples componentes (separados por ";")
+    str_trim(SUBGRUPO) != "",
+    !primer_palabra %in% palabras_problema | str_detect(SUBGRUPO, ";")
   ) |>
   # Elimina la columna auxiliar 'primer_palabra' que ya no se necesita
   select(-primer_palabra) |>
@@ -282,49 +329,80 @@ Se crea una función para corregir porcentajes de acuerdo a estos criterios:
 
 corregir_porcentajes <- function(p_string, n_taxones) {
   # Si el string está vacío, es NA o contiene "No aplica" (sin importar mayúsculas)
-  # asigna porcentajes iguales entre todos los taxones
+  # Se asignan porcentajes iguales entre todos los taxones
   if (is.na(p_string) || p_string == "" || str_detect(p_string, regex("no aplica", ignore_case = TRUE))) {
     p_num <- rep(100 / n_taxones, n_taxones)
     es_asignacion_igual <- TRUE
+
   } else {
-    # Separa el string por comas y limpia espacios
+    # Separar el string por comas y limpiar espacios
     p <- str_trim(str_split(p_string, ",\\s*")[[1]])
-    # Convierte a numérico suprimiendo advertencias (por textos no numéricos)
+
+    # Convertir a numérico suprimiendo advertencias (por textos no numéricos)
     p_num <- suppressWarnings(as.numeric(p))
 
-    # Si todos los valores son NA después de convertir, asigna valores iguales
+    # Si todos los valores son NA después de convertir, se asignan valores iguales
     if (all(is.na(p_num))) {
       p_num <- rep(100 / n_taxones, n_taxones)
       es_asignacion_igual <- TRUE
+
     } else {
       es_asignacion_igual <- FALSE
 
-      # Si hay un porcentaje de más, elimina el último
+      # --- CASOS DE CORRECCIÓN DE LONGITUDES ---
+
+      # Caso 1: hay un porcentaje de más → eliminar el último
       if (length(p_num) == n_taxones + 1) {
         p_num <- p_num[1:n_taxones]
-      # Si hay uno de menos, calcula el faltante para completar 100 y lo agrega
+
+      # Caso 2: hay un porcentaje de menos → calcular faltante para completar 100
       } else if (length(p_num) == n_taxones - 1) {
         faltante <- 100 - sum(p_num, na.rm = TRUE)
         p_num <- c(p_num, faltante)
+
+      # Caso 3: hay más de un porcentaje faltante → repartir restante equitativamente
+      } else if (length(p_num) < n_taxones) {
+        suma_actual <- sum(p_num, na.rm = TRUE)
+        n_faltantes <- n_taxones - length(p_num)
+        restante <- 100 - suma_actual
+
+        if (restante >= 0) {
+          # Reparto equitativo del porcentaje restante
+          p_num <- c(p_num, rep(restante / n_faltantes, n_faltantes))
+        } else {
+          warning("Suma de porcentajes excede 100, no se puede completar los valores faltantes")
+          return(list(porcentajes = rep(NA_real_, n_taxones), es_asignacion_igual = es_asignacion_igual))
+        }
       }
 
-      # Si aún no coincide la longitud, devuelve NAs y advierte
+      # --- VALIDACIÓN FINAL ---
+
+      # Si aún no coincide la longitud, abortar y devolver NAs
       if (length(p_num) != n_taxones) {
         warning("Número de porcentajes no coincide con número de taxones")
         return(list(porcentajes = rep(NA_real_, n_taxones), es_asignacion_igual = es_asignacion_igual))
       }
 
-      # Escala los porcentajes para que sumen exactamente 100 (preserva proporciones)
+      # --- ESCALADO FINAL ---
+
+      # Ajustar todos los valores proporcionalmente para que sumen exactamente 100
       suma_total <- sum(p_num, na.rm = TRUE)
       if (!is.na(suma_total) && suma_total != 100 && suma_total > 0) {
         p_num <- 100 * p_num / suma_total
       }
+      # Redondear a 4 decimales para evitar artefactos de coma flotante
+      p_num <- round(p_num, 4)
     }
   }
 
-  # Devuelve lista con los porcentajes corregidos y flag de asignación automática
-  return(list(porcentajes = p_num, es_asignacion_igual = es_asignacion_igual))
+  # --- SALIDA ---
+
+  return(list(
+    porcentajes = p_num,
+    es_asignacion_igual = es_asignacion_igual
+  ))
 }
+
 
 ```
 
@@ -389,13 +467,55 @@ correcciones <- c(
   "Oxiaquic" = "Oxyaquic",
   "Xantic" = "Xanthic",
   #Antioquia
-  "Fluvaquenti" = "Fluventic",
-  "Fluventicc" = "Fluventic",
+  "Fluvaquentic Dystrustepts" = "Fluventic Dystrustepts", # revisar nombre completo
+  "Fluvaquentic Dystrudepts" = "Fluventic Dystrudepts",
+  "Fluvaquentic Haplustepts" = "Fluventic Haplustepts",
+  #"Fluventicc" = "Fluventic",
   "Usthorthents" =  "Ustorthents",
   "Hapludoxs" = "Hapludox",
   "Kandiudoxs" = "Kandiudox",
   "Haplofibrist" = "Haplofibrists",
-  "Haplofibristss" = "Haplofibrists")
+  "Haplofibristss" = "Haplofibrists",
+  #Boyacá
+  "Ruptic Ultic Dystrudepts" = "ruptic-ultic dystrudepts",
+  #Chocó
+  "Plintic" = "Plinthic",
+  "Virtrandic" = "Vitrandic",
+  #Cesar
+  "Aridic Entic Haplustolls" = "aridic lithic haplustolls",
+  #Córdoba
+  "Aquertic Dystrustepts" = "Aquic Dystrustepts",
+  "Aquertic Haplustepts" = "Aquic Haplustepts",
+  "Rudic Ultic Eutrudepts" = "Ruptic-Alfic Eutrudepts",
+  #Cundinamarca
+  "Humic Dystrocryepts" = "Folistic Dystrocryepts",
+  "Humic Lithic Dystrocryepts" = "Lithic Dystrocryepts",
+  "Humic Lithic Dystrustepts" = "Lithic Dystrustepts",
+  #Huila
+  "Aquic Endoaquepts" = "Typic Endoaquepts",
+  "Humic Haplustepts" = "Typic Haplustepts",        # o "Humic Dystrudepts" si se justifica
+  "Plinthic Endoaquepts"     = "Typic Endoaquepts", #tampoco Plnthaquic Endoaquepts en la librería
+  #La Guajira
+  "Lithic Aridic Ustorthents" = "aridic lithic ustorthents",
+  "Saladic Natrustalfs" = "salidic natrustalfs",
+  "Inceptic Aridic Haplustalfs" = "inceptic haplustalfs",
+  #Magdalena
+  "Thapto Histic Fluvaquents" = "thapto-histic fluvaquents",
+  #Norte de Santander
+  "Entic Dystrudepts" = "Typic Dystrudepts",
+  #Santander
+  "Ustic Dystrustepts" = "Typic Dystrustepts",
+  "Ustic Dystrudepts" = "Typic Dystrustepts",
+  "Humic Pachic Dystrudepts" = "Humic Dystrudepts",
+  #Sucre
+  "Aquic Haplusterts" = "Udic Haplusterts",
+  "Vertic Epiaquerts" = "Typic Epiaquerts",
+  #Tlima
+  "Sulfic Ustifluvents" = "Typic Ustifluvents",
+  #Valle del Cauca
+  "Hapludoxs" = "Hapludox",
+  "Fluvaquentic Endoaquerts" = "Typic Endoaquerts",
+  "Thapto Histic Sulfaquents" = "thapto-histic sulfaquents")
 
 # Correcciones manuales conocidas (puedes agregar más si aparecen otros errores)
 datos_largos <- datos_largos |>
@@ -577,6 +697,14 @@ datos_sf_q <- ucs_depto_piloto_sf %>%
 # Exporta los datos en formato qs
 qs::qsave(datos_sf_q, here::here("Data", "OUTPUT_rao_piloto_sf.qs"))
 
+#Alternativamente, si se desea exportar para SIG
+#sf::st_write(
+#  datos_sf_q, 
+#  here::here("Data", "OUTPUT_rao_piloto_sf.gpkg"),
+#  layer = "datos_sf_q", 
+#  driver = "GPKG"
+#)
+
 
 ```
 
@@ -588,44 +716,101 @@ Se visualizan los resultados espacialmente
 pal <- wes_palette("Zissou1", 100, type = "continuous")
 
 p_rao_piloto <- ggplot(datos_sf_q) +
+  geom_sf(data = departamentos_sf, fill = "gray90", color = "gray90") +
   geom_sf(aes(fill = Q), color = NA) +
-  scale_fill_gradientn(colours = pal, na.value = "white") + 
-  labs(
-    fill = "Entropía Q"
+  scale_fill_gradientn(
+    colours = pal,
+    na.value = "white",
+    guide = guide_colorbar(
+      direction = "horizontal",
+      title.position = "left",
+      title.vjust = 1,             # vertical adjustment (optional)
+      barwidth = unit(8, "cm"),
+      barheight = unit(0.4, "cm")
+    )
   ) +
-  theme_minimal()
+  labs(fill = "Entropía Q") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.justification = "center",
+    legend.title.align = 0.5,
+    legend.text.align = 0.5,
+    legend.margin = margin(t = 15, unit = "pt")  # adds space above legend
+  )
 
 # Guarda la figura como PNG
 ggsave(
   filename = here("Figures", "rao_piloto.png"),
   plot = p_rao_piloto,
-  width = 10,
-  height = 8,
+  width = 8,
+  height = 10,
   dpi = 300
 )
 
 #Visualiza
-p_rao_piloto
+#p_rao_piloto
 
 ```
+
+Se visualizan las áreas de las ucs para el área piloto
+
+```{r check_visually}
+
+# Se visualizan datos geográficamente (edad, sin leyenda)
+p_ucs_area_piloto <- ggplot2::ggplot(datos_sf_q) +
+  geom_sf(data = departamentos_sf, fill = "gray90", color = "gray90") +
+  geom_sf(aes(fill = AREA_HA), color = NA) +
+  scale_fill_viridis_c(
+    name = "Área (Ha)",
+    guide = guide_colorbar(
+      direction = "horizontal",
+      title.position = "left",     # Title on the left
+      title.vjust = 1,             # vertical adjustment (optional)
+      barwidth = unit(8, "cm"),    # longer bar
+      barheight = unit(0.4, "cm")  # thinner bar
+    )
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.justification = "center",
+    legend.title.align = 0.5,
+    legend.text.align = 0.5,
+    legend.margin = margin(t = 15, unit = "pt")  # ← adds space above legend
+  )
+
+#guarda el último gráfico generado
+ggsave(here("Figures","ucs_area_piloto.png"), 
+       plot = p_ucs_area_piloto,
+       width = 8, 
+       height = 10, 
+       dpi = 350)
+
+```
+
 Se crea el mosaico gráfico para exportar
 
 ```{r}
-#Se crea mosaico
-p_mosaico_ucs_rao <- p_ucs_piloto + p_rao_piloto
 
+# Armar el mosaico horizontal de los tres mapas
+p_mosaico_ucs_rao <- p_ucs_piloto + p_ucs_area_piloto + p_rao_piloto +
+  plot_layout(ncol = 3)
 
-# Guardar como imagen
+# Exportar
 ggsave(
-  filename = here("Figures", "mosaico_ucs_rao.png"),
+  filename = here::here("Figures", "mosaico_ucs_rao.png"),
   plot = p_mosaico_ucs_rao,
-  width = 16,
+  width = 21,
   height = 8,
-  dpi = 300
+  dpi = 350
 )
 
+
 #Se visualiza
-p_mosaico_ucs_rao
+#p_mosaico_ucs_rao
 
 ```
 
