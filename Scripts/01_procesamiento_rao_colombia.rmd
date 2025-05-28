@@ -63,6 +63,7 @@ ggsave(here("Figures","ucs_area_log10.png"), width = 10, height = 8, dpi = 300)
 Luego se cargan los departamentos de Colombia
 
 ```{r load_departments}
+
 # Define ruta y nombre de capa de geopackage de departamentos
 deptos_ruta <- here("Data", "INPUT_departamentos_IGAC_Abril_2025.gpkg")
 capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]

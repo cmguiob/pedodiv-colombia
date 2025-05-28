@@ -1,0 +1,704 @@
+---
+title: "Análisis de patrones de puntos de pedodiversidad"
+author: "Carlos Manuel Guío Blanco"
+date: Sys.Date
+output: html_notebook
+---
+
+En este cuaderno se presenta un análisis de patrones de puntos de pedodiversidad. Se parte de los resultados del análisis exploratorio (analisis_eda_rao_colombia.Rmd), donde se identificó que que los datos de Q requieren una transformación para su uso óptimo.
+
+## 1. Configuración
+
+A continuación se cargan las librería necesarias
+
+```{r config, include = FALSE}
+
+# Para renderizar el documento
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c(
+  "here", #manejo de rutas
+  "sf", #manipulación de dats espaciales
+  "skimr", #estadisticas
+  "e1071", #estadisticas
+  "dplyr", #procesamiento de data frames
+  "ggplot2",  #graficación
+  "ggExtra", #marginal plot
+  "patchwork", #mosaicos gráficos
+  "spatstat", #analisis de patrones de puntos
+  "spatstat.geom", #analisis de patrones de puntos
+  "spatstat.explore", #analisis de patrones de puntos
+  "wesanderson", #paleta de colores
+  "viridis", #paleta colores
+  "qs" #escribir y leer rápidamente objetos R
+  )
+)
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+#Defino colores para coldspots y hotspots
+col_hot  <- pal[90]  # color más alto
+col_cold <- pal[10]    # color más bajo
+
+```
+
+## 2. Carga de datos
+
+Los datos producto del procesamiento, se han subido a un repositorio de Zenodo.
+
+```{r carga}
+
+#Carga local sin internet
+#ruta_ucs_rao <- here::here("Data", "OUTPUT_rao_andina_sf.qs")
+#ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
+
+# Corre script externo
+source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+
+head(ucs_rao_sf)
+```
+
+Se cargan los datos de departamentos involucrados en el set de datos de pedodiversidad, para posteriormente crear la ventana de observación para el análisis.
+
+```{r}
+
+# Define ruta y nombre de capa de geopackage de departamentos
+deptos_ruta <- here("Data", "INPUT_departamentos_IGAC_Abril_2025.gpkg")
+capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]
+
+# Carga geopackage de dpartamentos
+departamentos_sf <- sf::st_read(
+  deptos_ruta,
+  layer = capa_nombre_deptos,
+  quiet = TRUE
+  ) |>
+  # Se seleccionan 21 departamentos de la zona Andina, Caribe y Pacífica
+  dplyr::filter(DeNombre %in% c(
+    "Antioquia", 
+    "Atlántico",
+    "Bolívar",
+    "Boyacá",
+    "Caldas",
+    "Cauca",
+    "Cesar",
+    "Chocó", 
+    "Córdoba",
+    "Cundinamarca",
+    "Huila",
+    "La Guajira",
+    "Magdalena",
+    "Nariño",
+    "Norte de Santander",
+    "Quindío",
+    "Risaralda",
+    "Santander", 
+    "Sucre",
+    "Tolima",
+    "Valle del Cauca")
+    ) |>
+  tidyr::drop_na()
+  
+
+# departamento_1_sf pasa de "SHAPE" a "geometry"
+names(departamentos_sf)[names(departamentos_sf) == "SHAPE"] <- "geometry"
+departamentos_sf <- sf::st_as_sf(as.data.frame(departamentos_sf), sf_column_name = "geometry")
+
+# Aseguramos que ambos datasets tengan la misma proyección
+departamentos_sf <- st_transform(departamentos_sf, st_crs(ucs_rao_sf))
+
+# Se unen los polígonos en uno solo
+limite_poly <- st_union(departamentos_sf) 
+
+# Aplica un buffer pequeño (ejemplo: 1 km) para que no queden puntos fuera
+limite_buffer <- st_buffer(limite_poly, dist = 1000)
+
+```
+
+
+## 3. Pre-procesamiento
+
+Se prepara la variable para el análisis. Para esto, se calcula Q/A, que en adelante se denomina Qdens, pues representa la densidad de Q por área de cada polígono de UCS. Esta cantidad se transforman con el log10, pues da la mejor distribución (continua, unimodal, casi centrada).
+
+```{r}
+
+ucs_rao_sf <- ucs_rao_sf |>
+  #Se descartan NAs debido a polígonos que no son suelos
+  tidyr::drop_na(Q) |>
+  
+  mutate(
+    # se deja un mínimo diferente de cero para trabajar con logaritmos
+    Q = case_when(Q == 0 ~ 1e-6, TRUE ~ Q),
+    #Se calcula la densidad de Q
+    Qdens = Q / AREA_HA,
+    log_Qdens = log(Qdens),  # suma pequeño valor para evitar log(0)
+    log_Qdens01 = (log_Qdens - min(log_Qdens, na.rm = TRUE)) /
+                   (max(log_Qdens, na.rm = TRUE) - min(log_Qdens, na.rm = TRUE))
+  )
+
+```
+
+
+Se genera un nuevo set de datos, utilizando el umbral máximo
+
+```{r}
+
+#Se definen dos umbrales
+umbral95 <- quantile(ucs_rao_sf$log_Qdens, 0.95, na.rm = TRUE) # percentil 95
+umbral05 <- quantile(ucs_rao_sf$log_Qdens, 0.05, na.rm = TRUE) # percentil 5
+
+
+ucs_rao_sf <- ucs_rao_sf |>
+  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral95),
+         log_Qdens_cold5 = as.integer(log_Qdens <= umbral05)) # returna 1 = TRUE, 0 = FALSE
+
+```
+
+Se extraen los centroides, con marca continua y binaria.
+
+```{r}
+
+# Asegúrate de que tu objeto es tipo sf
+centroides_sf <- st_centroid(ucs_rao_sf) 
+
+
+centroides_hot_sf <- centroides_sf[centroides_sf$log_Qdens_hot95 == 1, ]
+centroides_cold_sf <- centroides_sf[centroides_sf$log_Qdens_cold5 == 1, ]
+
+```
+
+
+Se visualizan estos mapas
+
+```{r}
+
+p_mapa_centroides_marca <- ggplot() +
+  geom_sf(
+    data = limite_buffer,
+    color = "gray90",
+    fill = "gray90",
+    size = 0.8,
+  ) +
+  geom_sf(
+    data = centroides_sf,
+    aes(color = log_Qdens),
+    alpha = 0.7,
+    size = .8,
+  ) +
+  scale_color_gradientn(
+    name = "Log(Q/A)",
+    colours = pal,
+    na.value = "white",
+    guide = guide_colorbar(
+      direction = "horizontal",
+      title.position = "left",
+      title.vjust = 1,             # vertical adjustment (optional)
+      barwidth = unit(4, "cm"),
+      barheight = unit(0.4, "cm")
+    )
+  ) +
+  labs(title = "Puntos de densidad de Q") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
+
+p_mapa_centroides_bin <- ggplot() +
+  geom_sf(
+    data = limite_buffer,
+    color = "gray90",
+    fill = "gray90",
+    size = 0.8,
+  ) +
+  geom_sf(
+    data = centroides_hot_sf,
+    aes(color = "Hotspots"),
+    alpha = 0.7,
+    size = .8,
+  ) +
+  geom_sf(
+    data = centroides_cold_sf,
+    aes(color = "Coldspots"),
+    alpha = 0.7,
+    size = 0.8,
+  ) +
+  scale_color_manual(
+    name = NULL,  # sin título de leyenda
+    values = c("Hotspots" = col_hot, "Coldspots" = col_cold),
+    guide = guide_legend(override.aes = list(size = 4))
+  ) +
+  labs(title = "Puntos críticos de densidad de Q") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
+
+p_mapa_centroides_hot <- ggplot() +
+  geom_sf(
+    data = limite_buffer,
+    color = "gray90",
+    fill = "gray90",
+    size = 0.8,
+  ) +
+  geom_sf(
+    data = centroides_hot_sf,
+    aes(color = "Hotspots"),
+    alpha = 0.7,
+    size = .8,
+  ) +
+  scale_color_manual(
+    name = NULL,  # sin título de leyenda
+    values = c("Hotspots" = col_hot),
+    guide = guide_legend(override.aes = list(size = 4))
+  ) +
+  labs(title = "Puntos de alta densidad de Q") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
+
+p_mapa_centroides_cold <- ggplot() +
+    geom_sf(
+    data = limite_buffer,
+    color = "gray90",
+    fill = "gray90",
+    size = 0.8,
+  ) +
+  geom_sf(
+    data = centroides_cold_sf,
+    aes(color = "Coldspots"),
+    alpha = 0.7,
+    size = 0.8,
+  ) +
+  scale_color_manual(
+    name = NULL,  # sin título de leyenda
+    values = c("Coldspots" = col_cold),
+    guide = guide_legend(override.aes = list(size = 4))
+  ) +
+  labs(title = "Puntos de baja densidad de Q") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",       # leyenda abajo
+    legend.title = element_blank()    # refuerzo: sin título
+  )
+
+p_mosaico_puntos_criticos <- p_mapa_centroides_hot + p_mapa_centroides_cold + p_mapa_centroides_bin + p_mapa_centroides_marca + plot_layout(ncol = 4)
+
+#guarda el último gráfico generado
+ggsave(here("Figures", "mapas_Qdens_puntos_criticos.png"),
+       plot = p_mosaico_puntos_criticos,
+       width = 17,
+       height = 7,
+       dpi = 350)
+
+```
+
+Se definen la ventana de observación y se crean los objetos ppp (de la librería spatstats). La ventana de observación corresponde al polígono, y no a una forma rectangualr, que generaría "escaneo" en áreas vacías.
+
+
+```{r}
+
+# Convierte el polígono a un objeto 'owin' (ventana de spatstat)
+W <- as.owin(limite_buffer)
+
+# Extrae las coordenadas de los puntos como X y Y
+centroides_hot_coords <- st_coordinates(centroides_hot_sf)
+centroides_cold_coords <- st_coordinates(centroides_cold_sf)
+
+
+# 3. Crea objetos ppp
+pp_hot <- ppp(x = centroides_hot_coords[,1], y = centroides_hot_coords[,2], window = W)
+pp_cold <- ppp(x = centroides_hot_coords[,1], y = centroides_hot_coords[,2], window = W)
+
+
+```
+
+
+## 4. Resumenes estadísticos de puntos
+
+### 4.1 Modelo univariado homogéneo k Ripley para hotspots y coldspots
+
+Restringir la escala r -i.e rango- mínima y máxima de análisis mejora la interpretación, la estabilidad estadística y también reduce el tiempo de cálculo. Según Wiegand & Moloney (2014), se recomienda utilizar menos de la mitad de la dimensión mas pequeña de la bounding box.  
+
+El parámetro r representa la distancia espacial a la que se evalúa el agrupamiento/repulsión entre puntos. Por defecto, Kest() usa una secuencia automática desde 0 hasta aproximadamente el máximo posible dentro de la ventana. Si no se ajusta, los valores altos de r (distancias grandes) pueden verse afectados por efectos de borde.
+
+```{r}
+
+# Calculo de r máximo de acuerdo a bbox/4
+bbox <- st_bbox(limite_buffer)
+# Dimensión mínima (en las mismas unidades de tu sistema de coordenadas)
+min_side <- min(bbox$xmax - bbox$xmin, bbox$ymax - bbox$ymin)
+rmax_bbox <- min_side / 4
+
+# Define la secuencia de r. Se selecciona un número moderado para exploración
+rseq_bbox <- seq(0, rmax_bbox, length.out = 50) # 50 valores
+
+# --------------------------------
+#Spatstat calcula distancia mínima al borde para todos los puntos
+maxr_hot <- maxnndist(pp_hot) 
+maxr_cold <- maxnndist(pp_cold) 
+
+#Si se quiere, también define el r mínimo
+minr_hot <- minnndist(pp_hot)
+minr_cold <- minnndist(pp_cold)
+
+
+# Define la secuencia de r. Se selecciona un número moderado para exploración
+rseq_hot <- seq(0, maxr_hot, length.out = 50) # 50 valores
+rseq_cold <- seq(0, maxr_cold, length.out = 50) # 50 valores
+
+```
+
+Se generan los gráficos básicos de spatstat. Para interpretar:
+
+K̂_iso(r) (negro): Es la estimación “isotrópica” estándar de la función K. Usa corrección de borde isotrópica y es la más utilizada.
+
+K̂_trans(r) (rojo punteado): Es la estimación de K usando la corrección “translation” (traducción). Suele ser más precisa en ventanas irregulares/grandes.
+
+K̂_bord(r) (verde punteado): Es la estimación de K usando la corrección “border” (borde). Menos robusta para ventanas muy irregulares o datos escasos en los bordes.
+
+K_pois(r) (azul punteado):Es la curva K esperada bajo el modelo de completa aleatoriedad espacial (CSR) (proceso de Poisson homogéneo). Es la referencia “nula” contra la cual se compara el agrupamiento real de los puntos.
+
+```{r}
+
+#Se corre el modelo para puntos univariados
+K_hot  <- Kest(pp_hot, r = rseq_hot)
+K_cold <- Kest(pp_cold, r = rseq_cold)
+
+plot(K_hot)
+plot(K_cold)
+
+```
+A continuación se genera un intervalo de confianza (envolvente). Esto genera n simulaciones nulas (CSR) y calcula los valores mínimos y máximos para cada r.  La función envelope() también calcula la curva observada con las correcciones iso, border y trans, pero se debe escoger una de estas, por l oque se aconseja correr primero Kest a modo exploratorio. Por otro lado, envelope() no calcula la curva teórica (de la distribución de Poisson), sino que calcula una media equivalente para las simulaciones.
+
+```{r}
+
+# nsim = número de simulaciones
+# rank = ancho del envelope (para bandas de confianza 95%, usa rank = 2.5 para 2.5% y 97.5%)
+env_hot <- envelope(
+  pp_hot,
+  r = rseq_bbox,   # <-- Esta línea asegura que el rango de r es igual a kest()
+  fun = Kest,
+  nsim = 100,        # número de simulaciones
+  rank = 2.5,         # para envelope máximo/mínimo = 1; para bandas tipo 95% usa rank = 2.5
+  simulate = expression(rpoispp(lambda = intensity(pp_hot), win = pp_hot$window)), 
+  savefuns = TRUE,  # guarda las simulaciones individuales por si quieres verlas
+  correction = "trans" # puedes especificar otro si prefieres (ej. "trans", "iso", "bord")
+)
+
+env_cold <- envelope(
+  pp_cold,
+  r = rseq_bbox,   # <-- Esta línea asegura que el rango de r es igual a kest()
+  fun = Kest,
+  nsim = 100,        # número de simulaciones
+  rank = 2.5,         # para envelope máximo/mínimo = 1; para bandas tipo 95% usa rank = 2.5
+  simulate = expression(rpoispp(lambda = intensity(pp_hot), win = pp_hot$window)), 
+  savefuns = TRUE,  # guarda las simulaciones individuales por si quieres verlas
+  correction = "trans" # puedes especificar otro si prefieres (ej. "trans", "iso", "bord")
+)
+
+```
+
+
+A continuación se grafican los resultados de K de Ripley para coldspots y hotspots. Se utilizan los datos de envelope
+
+```{r}
+
+# Transforma en df (spatstats exporta como "envelope"   "fv" y generan conflicto en ggplot)
+# Los campos relevantes: r (distancia), obs (observado), theo (teórico), lo (mínimo simulado), hi (máximo simulado)
+env_hot_df <- as_tibble(env_hot)
+env_cold_df <- as_tibble(env_cold)
+
+
+# Hotspots con leyenda
+p_hot <- ggplot(env_hot_df, aes(x = r)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80", alpha = 0.6) +
+  geom_line(aes(y = obs, color = "Observada"), size = 1.2) +
+  geom_line(aes(y = mmean, color = "Nulo CSR"), linetype = "dashed", size = 1) +
+  scale_color_manual(
+    name = "Curva",
+    values = c("Observada" = col_hot, "Nulo CSR" = "black")
+  ) +
+  labs(
+    title = "Curva K (trans) Hotspots",
+    x = "Distancia r",
+    y = "K(r)"
+  ) +
+  theme_minimal(base_size = 14) 
+
+# Coldspots con leyenda
+p_cold <- ggplot(env_cold_df, aes(x = r)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey80", alpha = 0.6) +
+  geom_line(aes(y = obs, color = "Observada"), size = 1.2) +
+  geom_line(aes(y = mmean, color = "Nulo CSR"), linetype = "dashed", size = 1) +
+  scale_color_manual(
+    name = "Curva",
+    values = c("Observada" = col_cold, "Nulo CSR" = "black")
+  ) +
+  labs(
+    title = "Curva K (trans) Coldspots",
+    x = "Distancia r",
+    y = "K(r)"
+  ) +
+  theme_minimal(base_size = 14) 
+
+# Mosaico
+p_mosaico_kripley_univ_homogeneo <- p_hot + p_cold + plot_layout(ncol = 1)
+
+p_mosaico_kripley_univ_homogeneo
+
+#guarda el último gráfico generado
+ggsave(here("Figures", "mosaico_kripley_univ_homogeneo.png"),
+       plot = p_mosaico_kripley_univ_homogeneo,
+       width = 8,
+       height = 10,
+       dpi = 350)
+
+```
+
+### 4.2 Modelo univariado inhomogéneo k Ripley para hotspots y coldspots
+
+
+En vez de asumir que los puntos (centroides) son igualmente probables en cualquier parte del espacio (CSR), se ajusta la intensidad esperada de aparición de puntos usando la información de área.
+
+Como la probabilidad de aparición de puntos (centroides) debería ser inversamente proporcional al área del polígono que representa, se puede definir una intensidad estimada por punto. Se utilizan los datos completos para crear una superficie continua, para usarla como input de kinhom(). Se utiliza unatransformación de raiz cuadrada para el area, ya que ni 1/A ni 1/log(A) dió contraste suficiente.Dado que la superficie de áreas es única para todo el conjunto, se calcula con los datos de centroides del conjunto completo.
+
+```{r}
+
+
+
+# Inversa del área, para cada punto
+centroides_sf <- centroides_sf |>
+  mutate(lambda_area = log(centroides_sf$AREA_HA)) |>
+  mutate(lambda_area = case_when(lambda_area < 0 ~ 0, TRUE ~ lambda_area))
+
+#Se extraen las coordenadas
+coords <- sf::st_coordinates(centroides_sf)
+
+#Se utiliza la misma ventana de observación (polígono + buffer)
+pp_centroides <- ppp(x = coords[,1], y = coords[,2], window = W, marks = centroides_sf$lambda_area)
+
+# Imágen de intensidad espacial usando kernel smoothing ponderado por la inversa del área
+lambda_im <- density.ppp(pp_centroides, weights = marks(pp_centroides), sigma = bw.diggle(pp_centroides))
+
+lambda_im[lambda_im < 0] <- 0
+
+# Visualiza la nueva escala como histograma
+hist(centroides_sf$lambda_area, breaks = 100)
+
+#Se visualiza la superficie
+plot(lambda_im)
+
+```
+
+Se grafica en ggplot comparando lambda con los puntos. Se observa que el Kernel multiplica los valores de forma negativa.
+
+```{r}
+
+# Convierte la imagen a data.frame
+lambda_area_df <- as.data.frame(lambda_im)
+colnames(lambda_area_df) <- c("x", "y", "lambda_area")
+
+# Elimina NA (fuera del polígono)
+lambda_area_df <- lambda_area_df[!is.na(lambda_area_df$lambda_area), ]
+
+#Plot de superficie lambda
+p_raster_lambda_area <- ggplot(lambda_area_df, aes(x = x, y = y, fill = lambda_area)) +
+  geom_raster(interpolate = TRUE) +
+  scale_fill_viridis(
+    option = "viridis", 
+    direction = -1, 
+    name = expression(lambda[area])
+    ) +
+  coord_equal() +
+  labs(
+    title = "Superficie de intensidad",
+    x = "", y = ""
+  ) +
+  theme_minimal(base_size = 14)
+
+# Plot de puntos
+p_puntos_lambda_area <- ggplot(centroides_sf) +
+  geom_sf(aes(color = AREA_HA), size = 1) +
+  scale_color_viridis_c(
+    name = "Área (Ha)",
+    option = "viridis", 
+    direction = -1) +
+  labs(
+    title = "Puntos que expresan área",
+    x = "", y = ""
+  ) +
+  theme_minimal(base_size = 14)
+
+p_lambda_area <- p_puntos_lambda_area / p_raster_lambda_area
+
+p_lambda_area
+
+#guarda el gráfico generado
+ggsave(here("Figures", "lambda_area_inhomogeneo.png"),
+       plot = p_lambda_area,
+       width = 8,
+       height = 12,
+      dpi = 350)
+
+```
+
+
+Se corre el modelo de Kinhom con la superficie de intensidad inversa a la raíz del área, para ambos conjuntos de datos
+
+```{r}
+
+
+Kinhom_area_hot <- Kinhom(pp_hot, lambda = lambda_im, r = rseq_bbox)
+Kinhom_area_cold <- Kinhom(pp_cold, lambda = lambda_im, r = rseq_bbox)
+
+plot(Kinhom_area_hot)
+plot(Kinhom_area_cold)
+
+```
+
+Para Kinhom, las envolventes no dan muy buenos resultados, pues no reflejan el modelo sin envolventes. No se muestran acá.
+
+
+```{r}
+
+Kinhom_hot_df <- as_tibble(Kinhom_area_hot)  # o Kinhom_area_cold
+Kinhom_cold_df <- as_tibble(Kinhom_area_cold)
+
+p_kinhom_hot <- ggplot(Kinhom_hot_df, aes(x = r)) +
+  geom_line(aes(y = border, color = "Observada (inhom.)"), size = 1.2) +
+  geom_line(aes(y = theo, color = "Nulo inhom."), linetype = "dashed", size = 1) +
+  scale_color_manual(
+    name = "Curva",
+    values = c("Observada (inhom.)" = col_hot, "Nulo inhom." = "black")
+  ) +
+  labs(
+    title = "Curva Kinhom Hotspots (corregida por área)",
+    x = "Distancia r",
+    y = "Kinhom(r)"
+  ) +
+  #xlim(0, 20000) +
+  theme_minimal(base_size = 14)
+
+p_kinhom_cold <- ggplot(Kinhom_cold_df, aes(x = r)) +
+  geom_line(aes(y = border, color = "Observada (inhom.)"), size = 1.2) +
+  geom_line(aes(y = theo, color = "Nulo inhom."), linetype = "dashed", size = 1) +
+  scale_color_manual(
+    name = "Curva",
+    values = c("Observada (inhom.)" = col_cold, "Nulo inhom." = "black")
+  ) +
+  labs(
+    title = "Curva Kinhom Coldspots (corregida por área)",
+    x = "Distancia r",
+    y = "Kinhom(r)"
+  ) +
+  #xlim(0, 20000) +
+  theme_minimal(base_size = 14)
+
+# Mosaico
+p_mosaico_kripley_univ_inhomogeneo <- p_kinhom_hot + p_kinhom_cold + plot_layout(ncol = 1)
+
+p_mosaico_kripley_univ_inhomogeneo
+
+#guarda el último gráfico generado
+ggsave(here("Figures", "mosaico_kripley_univ_inhomogeneo.png"),
+       plot = p_mosaico_kripley_univ_inhomogeneo,
+       width = 8,
+       height = 10,
+       dpi = 350)
+
+```
+
+### 4.3 Modelo bivariado inhomogéneo
+
+
+```{r}
+
+# 1. Crea una columna de marca en cada set
+centroides_hot_sf$grupo  <- "hotspot"
+centroides_cold_sf$grupo <- "coldspot"
+
+# 2. Une ambos datasets
+centroides_bi_sf <- bind_rows(centroides_hot_sf, centroides_cold_sf)
+
+# 3. Extrae las coordenadas
+coords_bi <- sf::st_coordinates(centroides_bi_sf)
+
+# 4. Crea el objeto ppp bivariado
+pp_bi <- ppp(
+  x      = coords_bi[,1],
+  y      = coords_bi[,2],
+  window = W,  
+  marks  = as.factor(centroides_bi_sf$grupo)
+)
+
+```
+Se corre el modelo usando la misma superfici lambda que para los modelos univariados
+
+```{r}
+
+#Se puede explorar una ventana mas grande
+rmax_bbox2 <- min_side / 2
+
+# Define la secuencia de r. Se selecciona un número moderado para exploración
+rseq_bbox2 <- seq(0, rmax_bbox2, length.out = 50) # 50 valores
+
+#O se puede probar con otra escala que propone el
+rmax_bi <- maxnndist(pp_bi)
+rseq_bi <- seq(0, rmax_bi, length.out = 100)
+
+#
+Kcross_bi_inhom <- Kcross.inhom(
+  X         = pp_bi,
+  i         = "hotspot",
+  j         = "coldspot",
+  lambdaI   = lambda_im,
+  lambdaJ   = lambda_im,
+  r         = rseq_bbox,
+  correction = "border"
+)
+
+plot(Kcross_bi_inhom)
+
+```
+
+Se grafica en ggplot
+
+```{r}
+
+# Convierte el resultado en tibble si no lo has hecho
+Kcross_bi_inhom_df <- as_tibble(Kcross_bi_inhom)
+
+# Grafica la función Kcross inhomogénea
+p_kcross_inhom <- ggplot(Kcross_bi_inhom_df, aes(x = r)) +
+  geom_line(aes(y = border, color = "Observada (inhom.)"), size = 1.2) +
+  geom_line(aes(y = theo, color = "Modelo nulo inhom."), linetype = "dashed", size = 1) +
+  scale_color_manual(
+    name = "Curva",
+    values = c("Observada (inhom.)" = "#E69F00", "Modelo nulo inhom." = "black")
+  ) +
+  labs(
+    title = "K cruzada inhomogénea: Hotspots vs Coldspots",
+    x = "Distancia r (m)",
+    y = expression(K[inhom](r))
+  ) +
+  theme_minimal(base_size = 14)
+
+p_kcross_inhom
+
+#guarda el último gráfico generado
+ggsave(here("Figures", "kcross_biv_inhomogeneo.png"),
+       plot = p_kcross_inhom,
+       width = 8,
+       height = 8,
+       dpi = 350)
+
+```
+
