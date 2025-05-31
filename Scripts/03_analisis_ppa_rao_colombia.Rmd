@@ -32,6 +32,7 @@ pacman::p_load(char = c(
   "spatstat", #analisis de patrones de puntos
   "spatstat.geom", #analisis de patrones de puntos
   "spatstat.explore", #analisis de patrones de puntos
+  "spatstat.core", #analisis de patrones de puntos
   "wesanderson", #paleta de colores
   "viridis", #paleta colores
   "qs" #escribir y leer rápidamente objetos R
@@ -58,7 +59,7 @@ Los datos producto del procesamiento, se han subido a un repositorio de Zenodo.
 #ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
 
 # Corre script externo
-source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+source(here::here("Scripts", "00_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 head(ucs_rao_sf)
 ```
@@ -315,7 +316,7 @@ centroides_cold_coords <- st_coordinates(centroides_cold_sf)
 
 # 3. Crea objetos ppp
 pp_hot <- ppp(x = centroides_hot_coords[,1], y = centroides_hot_coords[,2], window = W)
-pp_cold <- ppp(x = centroides_hot_coords[,1], y = centroides_hot_coords[,2], window = W)
+pp_cold <- ppp(x = centroides_cold_coords[,1], y = centroides_cold_coords[,2], window = W)
 
 
 ```
@@ -338,7 +339,7 @@ min_side <- min(bbox$xmax - bbox$xmin, bbox$ymax - bbox$ymin)
 rmax_bbox <- min_side / 4
 
 # Define la secuencia de r. Se selecciona un número moderado para exploración
-rseq_bbox <- seq(0, rmax_bbox, length.out = 50) # 50 valores
+rseq_bbox <- seq(0, rmax_bbox, length.out = 100) # 100 valores
 
 # --------------------------------
 #Spatstat calcula distancia mínima al borde para todos los puntos
@@ -351,8 +352,8 @@ minr_cold <- minnndist(pp_cold)
 
 
 # Define la secuencia de r. Se selecciona un número moderado para exploración
-rseq_hot <- seq(0, maxr_hot, length.out = 50) # 50 valores
-rseq_cold <- seq(0, maxr_cold, length.out = 50) # 50 valores
+rseq_hot <- seq(0, maxr_hot, length.out = 100) # 50 valores
+rseq_cold <- seq(0, maxr_cold, length.out = 100) # 50 valores
 
 ```
 
@@ -472,28 +473,97 @@ Como la probabilidad de aparición de puntos (centroides) debería ser inversame
 
 ```{r}
 
-
+# Extrae solo las coordenadas
+coords <- sf::st_coordinates(centroides_sf)
 
 # Inversa del área, para cada punto
 centroides_sf <- centroides_sf |>
+  #Crea variable lambda
   mutate(lambda_area = log(centroides_sf$AREA_HA)) |>
+  # Asigna cero en caso de números negativos
   mutate(lambda_area = case_when(lambda_area < 0 ~ 0, TRUE ~ lambda_area))
 
-#Se extraen las coordenadas
-coords <- sf::st_coordinates(centroides_sf)
-
 #Se utiliza la misma ventana de observación (polígono + buffer)
-pp_centroides <- ppp(x = coords[,1], y = coords[,2], window = W, marks = centroides_sf$lambda_area)
+pp_centroides <- ppp(
+  #Coordenadas para la superficie
+  x = coords[,1], y = coords[,2],
+  window = W,
+  #Se define marca para el peso del kernel
+  marks = centroides_sf$lambda_area
+)
 
 # Imágen de intensidad espacial usando kernel smoothing ponderado por la inversa del área
-lambda_im <- density.ppp(pp_centroides, weights = marks(pp_centroides), sigma = bw.diggle(pp_centroides))
+lambda_im <- density.ppp(
+  pp_centroides,
+  # Se da el peso según la variable de marca
+  weights = marks(pp_centroides),
+  # Ancho de banda
+  sigma = bw.diggle(pp_centroides)
+)
 
+# Se asigna cero a posibles negativos residuales
 lambda_im[lambda_im < 0] <- 0
+
+# --- Se hace ahora separando las superficies por hot y cold
+
+# Extrae coordenadas de todos los centroides
+coords <- sf::st_coordinates(centroides_sf)
+
+# Lambda solo para hotspots
+centroides_sf <- centroides_sf |>
+  mutate(lambda_area_hot = case_when(
+    log_Qdens_hot95 == 1 ~ log(AREA_HA),
+    TRUE ~ 0
+  )) |>
+  mutate(lambda_area_hot = if_else(lambda_area_hot < 0, 0, lambda_area_hot))
+
+# Crea objeto ppp sobre toda la ventana, usando la marca lambda_area_hot
+pp_centroides_hot <- ppp(
+  x = coords[,1], y = coords[,2],
+  window = W,
+  marks = centroides_sf$lambda_area_hot
+)
+
+# Calcula la superficie de intensidad lambda usando kernel smoothing
+lambda_im_hot <- density.ppp(
+  pp_centroides_hot,
+  weights = marks(pp_centroides_hot),
+  sigma = bw.diggle(pp_centroides_hot)
+)
+
+# Corrige negativos residuales y ceros a epsilon mínimo
+lambda_im_hot[lambda_im_hot < 1e-10] <- 1e-10
+
+# Igual para coldspots
+centroides_sf <- centroides_sf |>
+  mutate(lambda_area_cold = case_when(
+    log_Qdens_cold5 == 1 ~ log(AREA_HA),
+    TRUE ~ 0
+  )) |>
+  mutate(lambda_area_cold = if_else(lambda_area_cold < 0, 0, lambda_area_cold))
+
+pp_centroides_cold <- ppp(
+  x = coords[,1], y = coords[,2],
+  window = W,
+  marks = centroides_sf$lambda_area_cold
+)
+
+lambda_im_cold <- density.ppp(
+  pp_centroides_cold,
+  weights = marks(pp_centroides_cold),
+  sigma = bw.diggle(pp_centroides_cold)
+)
+lambda_im_cold[lambda_im_cold < 1e-10] <- 1e-10
+
 
 # Visualiza la nueva escala como histograma
 hist(centroides_sf$lambda_area, breaks = 100)
+hist(centroides_sf$lambda_area_hot, breaks = 100)
+hist(centroides_sf$lambda_area_cold, breaks = 100)
 
-#Se visualiza la superficie
+#Se visualizan las superficies
+plot(lambda_im_cold)
+plot(lambda_im_hot)
 plot(lambda_im)
 
 ```
@@ -556,8 +626,8 @@ Se corre el modelo de Kinhom con la superficie de intensidad inversa a la raíz 
 ```{r}
 
 
-Kinhom_area_hot <- Kinhom(pp_hot, lambda = lambda_im, r = rseq_bbox)
-Kinhom_area_cold <- Kinhom(pp_cold, lambda = lambda_im, r = rseq_bbox)
+Kinhom_area_hot <- Kinhom(pp_hot, lambda = lambda_im_hot, r = rseq_bbox)
+Kinhom_area_cold <- Kinhom(pp_cold, lambda = lambda_im_cold, r = rseq_bbox)
 
 plot(Kinhom_area_hot)
 plot(Kinhom_area_cold)
@@ -619,6 +689,8 @@ ggsave(here("Figures", "mosaico_kripley_univ_inhomogeneo.png"),
 ### 4.3 Modelo bivariado inhomogéneo
 
 
+Se crea el objeto pp bivariado, que contiene tanto coldspots como hotspots
+
 ```{r}
 
 # 1. Crea una columna de marca en cada set
@@ -648,7 +720,7 @@ Se corre el modelo usando la misma superfici lambda que para los modelos univari
 rmax_bbox2 <- min_side / 2
 
 # Define la secuencia de r. Se selecciona un número moderado para exploración
-rseq_bbox2 <- seq(0, rmax_bbox2, length.out = 50) # 50 valores
+rseq_bbox2 <- seq(0, rmax_bbox2, length.out = 100) # 50 valores
 
 #O se puede probar con otra escala que propone el
 rmax_bi <- maxnndist(pp_bi)
@@ -659,8 +731,8 @@ Kcross_bi_inhom <- Kcross.inhom(
   X         = pp_bi,
   i         = "hotspot",
   j         = "coldspot",
-  lambdaI   = lambda_im,
-  lambdaJ   = lambda_im,
+  lambdaI   = lambda_im_hot,
+  lambdaJ   = lambda_im_cold,
   r         = rseq_bbox,
   correction = "border"
 )
