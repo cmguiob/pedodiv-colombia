@@ -7,61 +7,85 @@ output: github_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c(
+  "here", #manejo de rutas
+  "sf", #manipulación de dats espaciales
+  "dplyr", #procesamiento de data frames
+  "ggplot2",  #graficación
+  "patchwork", #mosaicos gráficos
+  "wesanderson", #paleta de colores
+  "qs" #escribir y leer rápidamente objetos R
+  )
+)
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+# Ajusta tamaño de letra para todo el script
+theme(base_size = 14)
+
 ```
 
 ## Carga
 
-Se cargan los datos de SoilGrids
-
+Se cargan los datos de SoilGrids mediante una función del ISRIC, modificada para este trabajo para realizar la carga masiva de variables espaciales sobre Colombia.
 
 ```{r cars}
 
-descargar_soilgrids_stack <- function(vars = c("sand", "silt", "soc", "cec"),
-                                      depth = "0-5cm",
-                                      stat = "mean",
-                                      crs_salida = "EPSG:9377",
-                                      resolucion = c(250, 250)) {
-    if (!"pacman" %in% installed.packages()[, "Package"]) install.packages("pacman")
-    pacman::p_load("terra", "gdalUtilities", "sf")
+# Source the function
+source("00_funcion_carga_soilgrids.R")
 
-    # Bounding box en IGH para Colombia
-    bb <- c(-8800000.000, 1400000.000, -7400000.000, -500000.000)
-    igh <- "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs"
-    sg_url <- "/vsicurl?max_retry=3&retry_delay=1&list_dir=no&url=https://files.isric.org/soilgrids/latest/data/"
-
-    capas <- list()
-
-    for (v in vars) {
-        capa <- paste0(v, "_", depth, "_", stat)
-        vrt_remote <- paste0(sg_url, v, "/", capa, ".vrt")
-        vrt_local <- file.path(tempdir(), paste0(capa, ".vrt"))
-
-        # Descargar VRT recortado
-        gdal_translate(
-            vrt_remote,
-            vrt_local,
-            of = "VRT",
-            tr = resolucion,
-            projwin = bb,
-            projwin_srs = igh
-        )
-
-        # Leer y reproyectar a EPSG 9377
-        r <- terra::rast(vrt_local)
-        r_proj <- terra::project(r, crs_salida)
-        names(r_proj) <- v
-        capas[[v]] <- r_proj
-    }
-
-    # Stack de todas las capas reproyectadas
-    return(terra::rast(capas))
-}
-
-stack_suelos <- descargar_soilgrids_stack()
-plot(stack_suelos)
+# Call the function with custom arguments
+stack_custom <- descargar_soilgrids_stack(
+  vars = c("phh2o", "sand"),
+  depths = c("30-60cm", "60-100cm"),
+  stats = c("Q0.95", "mean"),
+  resolucion = c(1000, 1000)
+)
 
 
 ```
 
-## Including Plots
+Validar que los archivos se cargaron correctamente
 
+```{r}
+
+#Validación
+names(stack_custom)
+summary(stack_custom)
+
+```
+
+## 3. Pre-procesamiento
+
+Convierte los archivos .vrt en .tif para facilitar graficación y análisis
+
+```{r}
+
+terra::writeRaster(stack_custom, here::here("Data","soilgrids_stack.tif"), overwrite = TRUE)
+
+stack_tif <- terra::rast(here::here("Data","soilgrids_stack.tif"))
+
+plot(stack_tif)
+```
+
+Reproyecta y normaliza los datos
+
+```{r}
+
+crs(stack_tif) <- "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs"
+stack_proj <- terra::project(stack_tif, "EPSG:9377")
+
+normalize_band <- function(x) (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+stack_proj_z <- app(stack_tif, normalize_band)
+
+plot(stack_proj_z)
+
+```
+
+A continuación se crea una función para calcular 
