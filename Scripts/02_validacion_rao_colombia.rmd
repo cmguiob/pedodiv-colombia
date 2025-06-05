@@ -1,0 +1,91 @@
+---
+title: "Validación de pedodiversidad taxonómica"
+output: github_document
+---
+
+## 1. Configuración
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c(
+  "here", #manejo de rutas
+  "sf", #manipulación de dats espaciales
+  "dplyr", #procesamiento de data frames
+  "ggplot2",  #graficación
+  "patchwork", #mosaicos gráficos
+  "wesanderson", #paleta de colores
+  "qs" #escribir y leer rápidamente objetos R
+  )
+)
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+# Ajusta tamaño de letra para todo el script
+theme(base_size = 14)
+
+```
+
+## Carga
+
+Se cargan los datos de SoilGrids mediante una función del ISRIC, modificada para este trabajo para realizar la carga masiva de variables espaciales sobre Colombia.
+
+```{r cars}
+
+# Source the function
+source("00_funcion_carga_soilgrids.R")
+
+# Call the function with custom arguments
+stack_custom <- descargar_soilgrids_stack(
+  vars = c("phh2o", "sand"),
+  depths = c("30-60cm", "60-100cm"),
+  stats = c("Q0.95", "mean"),
+  resolucion = c(1000, 1000)
+)
+
+
+```
+
+Validar que los archivos se cargaron correctamente
+
+```{r}
+
+#Validación
+names(stack_custom)
+summary(stack_custom)
+
+```
+
+## 3. Pre-procesamiento
+
+Convierte los archivos .vrt en .tif para facilitar graficación y análisis
+
+```{r}
+
+terra::writeRaster(stack_custom, here::here("Data","soilgrids_stack.tif"), overwrite = TRUE)
+
+stack_tif <- terra::rast(here::here("Data","soilgrids_stack.tif"))
+
+plot(stack_tif)
+```
+
+Reproyecta y normaliza los datos
+
+```{r}
+
+crs(stack_tif) <- "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs"
+stack_proj <- terra::project(stack_tif, "EPSG:9377")
+
+normalize_band <- function(x) (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+stack_proj_z <- app(stack_tif, normalize_band)
+
+plot(stack_proj_z)
+
+```
+
+A continuación se crea una función para calcular 
