@@ -37,15 +37,17 @@ Se cargan los datos de SoilGrids mediante una función del ISRIC, modificada par
 
 ```{r cars}
 
-# Source the function
+# Crea un objeto tipo función al ejecutar un  script externo
 source("00_funcion_carga_soilgrids.R")
 
-# Call the function with custom arguments
-stack_custom <- descargar_soilgrids_stack(
-  vars = c("phh2o", "sand"),
-  depths = c("30-60cm", "60-100cm"),
-  stats = c("Q0.95", "mean"),
-  resolucion = c(1000, 1000)
+# Se llama la función con los argumentos adaptados al proyecto
+stack_suelo <- descargar_soilgrids_stack(
+  vars = c("sand", "silt", "clay", "soc"),
+  depths = c("0-5cm", "5-15cm", "15-30cm", "60-100cm", "100-200cm"),
+  stats = c("mean"),
+  resolucion = c(250, 250),
+  #define ruta de descarga y verifica si ya existen los archivos
+  ruta_vrt = here::here("Data", "OUTPUT_SoilGrids_vrt") 
 )
 
 
@@ -55,11 +57,19 @@ Validar que los archivos se cargaron correctamente
 
 ```{r}
 
-#Validación
-names(stack_custom)
-summary(stack_custom)
+# Validación rápida: nombres y visual
+print(names(stack_suelo))
+
+# Selecciona algunas capas por número de índice
+stack_sub <- stack_suelo[[c(1, 8, 15, 22)]]
+
+# Grafica solo esas capas (en un mismo panel multi-cuadro)
+plot(stack_sub)
 
 ```
+
+
+VERIFICAR DE AQUI EN ADELANTE: FUNCIONA PROJ EN COMPU PERSONAL?
 
 ## 3. Pre-procesamiento
 
