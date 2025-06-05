@@ -5,6 +5,7 @@
 # El ISRIC pone SoilGrids disponible de forma gratuita, info en los enlaces:
 # https://www.isric.org/explore/soilgrids
 # https://www.isric.org/explore/soilgrids/soilgrids-access
+# https://www.isric.org/explore/soilgrids/faq-soilgrids
 # Descripción:
 # Este script contiene una función para descargar de forma masiva varias 
 # capas de SoilGrids, correspondientes a distintas variables, profundidades y
@@ -58,7 +59,10 @@
 descargar_soilgrids_stack <- function(vars = c("sand", "bdod"),
                                       depths = c("0-5cm", "15-30cm"),
                                       stats = c("mean"),
-                                      resolucion = c(1000, 1000)) {
+                                      resolucion = c(250, 250),
+                                      ruta_vrt = "OUTPUT_SoilGrids_vrt") {
+  
+  if (!dir.exists(ruta_vrt)) dir.create(ruta_vrt, recursive = TRUE)
   
   
   # -------------------------------------------
@@ -119,7 +123,7 @@ descargar_soilgrids_stack <- function(vars = c("sand", "bdod"),
         # Construye nombre de capa, ruta remota y ruta temporal local
         capa <- paste0(v, "_", d, "_", s)
         vrt_remote <- paste0(sg_url, v, "/", capa, ".vrt")
-        vrt_local  <- file.path(tempdir(), paste0(capa, ".vrt"))
+        vrt_local  <- file.path(ruta_vrt, paste0(capa, ".vrt"))
         
         message("Procesando: ", capa)
         
@@ -127,16 +131,20 @@ descargar_soilgrids_stack <- function(vars = c("sand", "bdod"),
         # 4. Crea archivo VRT recortado
         # ----------------------------
         
-        try({
-          gdal_translate(
-            src_dataset = vrt_remote,
-            dst_dataset = vrt_local,
-            of = "VRT",
-            tr = resolucion,
-            projwin = bb,
-            projwin_srs = igh
-          )
-        }, silent = TRUE)
+        if (!file.exists(vrt_local)) {
+          try({
+            gdal_translate(
+              src_dataset = vrt_remote,
+              dst_dataset = vrt_local,
+              of = "VRT",
+              tr = resolucion,
+              projwin = bb,
+              projwin_srs = igh
+            )
+          }, silent = TRUE)
+        } else {
+          message("Usando VRT existente: ", vrt_local)
+        }
         
         # ----------------------------
         # 5. Lee raster resultante y lo añade al stack
