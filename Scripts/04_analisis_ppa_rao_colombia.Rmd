@@ -773,4 +773,3 @@ ggsave(here("Figures", "kcross_biv_inhomogeneo.png"),
        dpi = 350)
 
 ```
-

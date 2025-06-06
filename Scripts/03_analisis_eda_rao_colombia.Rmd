@@ -85,6 +85,7 @@ ucs_rao_sf <- ucs_rao_sf |>
   dplyr::mutate(Q = case_when(Q == 0 ~ 0.000001, TRUE ~ Q),
                 Qdens = Q/AREA_HA,
                 log_Qdens = log(Qdens)) 
+
 ```
 
 

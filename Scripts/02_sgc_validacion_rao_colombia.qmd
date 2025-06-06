@@ -1,0 +1,136 @@
+---
+title: "Validación de pedodiversidad"
+author: Carlos M. Guío Blanco
+format: html
+---
+
+Este cuaderno realiza la validación de los datos de pedodiversidad de Rao, calculada a partir de polígonos de UCS, frente a la diversidad de Rao calculada a partir de propiedades de los suelos a diferentes profundidades, extraidas de SoilGrids. A continuación se presenta:
+
+1.  La carga de datos de pedodiversidad basada en polígonos
+2.  La carga de datos de SoilGrids
+3.  Cálculo de pedodiversidad raster según Rocchini et al.(2017, 2021)
+4.  Comparación de pedodiversidad espacializada
+
+```{r config, include = FALSE}
+
+# Para renderizar el documento
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c(
+  "here", #manejo de rutas
+  "sf", #manipulación de dats espaciales
+  "dplyr", #procesamiento de data frames
+  "terra", #procesamiento raster
+  "ggplot2",  #graficación
+  "patchwork", #mosaicos gráficos
+  "wesanderson", #paleta de colores
+  "qs" #escribir y leer rápidamente objetos R
+  )
+)
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+```
+
+## 1. Carga de datos de pedodiversidad de UCS
+
+Los datos producto del procesamiento de UCS, se descargan desde un repositorio abierto de Zenodo.
+
+```{r}
+
+# Corre script externo
+source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+
+#Se crea una variable Qdens que expresa la densidad de Q
+ucs_rao_sf <- ucs_rao_sf |>
+  tidyr::drop_na(Q) |>
+  # se deja un mínimo diferente de cero para trabajar con logaritmos
+  dplyr::mutate(
+    Q = case_when(Q == 0 ~ 0.000001, TRUE ~ Q),
+    Qdens = Q/AREA_HA,
+    log_Qdens = log(Qdens)
+    ) 
+
+head(ucs_rao_sf)
+```
+
+Se valida que el archivo se cargó correctamente.
+
+## 2. Carga de datos de SoilGrids
+
+Se cargan los datos de valores promedio para varias propiedades. Los valores promedio es una de las estadístics reportadas en SoilGrids. Otras opciones son algunos quantiles o la incertidumbre.
+
+Las propiedades de [SoilGrids se reportan según las siguientes unidades](https://www.isric.org/explore/soilgrids/faq-soilgrids#What_do_the_filename_codes_mean):
+
+-   bdod (Densidad aparente de la fracción fina del suelo): **cg/cm³**
+-   cec (Capacidad de intercambio catiónico del suelo): **mmol(c)/kg**
+-   cfvo (Fracción volumétrica de fragmentos gruesos (\> 2 mm)): **cm³/dm³**
+-   clay (Proporción de partículas de arcilla (\< 0.002 mm) en la fracción fina): **g/kg**
+-   nitrogen (Nitrógeno total (N)): **cg/kg**
+-   phh2o (pH del suelo en agua): **pH x10**
+-   sand (Proporción de partículas de arena (\> 0.05/0.063 mm) en la fracción fina): **g/kg**
+-   silt (Proporción de partículas de limo (≥ 0.002 mm y ≤ 0.05/0.063 mm) en la fracción fina): **g/kg**
+-   soc (Contenido de carbono orgánico del suelo en la fracción fina):**dg/kg**
+-   ocd (Densidad de carbono orgánico): **hg/m³**
+-   ocs (Reservas de carbono orgánico): **t/ha**
+
+```{r carga_SoilGrids}
+
+# Crea un objeto tipo función al ejecutar un  script externo
+source("00_funcion_carga_soilgrids.R")
+
+# Se llama la función con los argumentos adaptados al proyecto
+stack_suelo <- descargar_soilgrids_stack(
+  vars = c("bdod", "sand", "silt", "clay", "soc", "cec", "phh2o"),
+  depths = c("0-5cm", "5-15cm", "15-30cm", "60-100cm"),
+  stats = c("mean"),
+  resolucion = c(250, 250),
+  #define ruta de descarga y verifica si ya existen los archivos
+  ruta_vrt = here::here("Data", "OUT_SoilGrids_vrt") 
+)
+```
+
+Se valida que los archivos se cargaron correctamente.
+
+```{r}
+
+# Validación rápida: nombres y visual
+print(names(stack_suelo))
+
+# Selecciona algunas capas por número de índice
+stack_sub <- stack_suelo[[c(1, 8, 15, 22)]]
+
+# Grafica solo esas capas (en un mismo panel multi-cuadro)
+plot(stack_sub)
+```
+
+Se descargan los datos en formato .tif localmente. Esto se realiza únicamente si el archivo aún no existe. Estos datos no se reflejan en el repositorio remoto (se maneja con .gitignore), ya que por su tamaño tiene conflicto con large files de GitHub.
+
+```{r}
+
+# Definir la ruta de salida
+out_raster <- here("Data", "OUT_soilgrids_stack.tif")
+
+# Verificar si el archivo ya existe antes de escribir
+if (!file.exists(out_raster)) {
+  writeRaster(stack_suelo, filename = out_raster, overwrite = TRUE)
+} else {
+  message("El archivo ya existe, no se sobrescribirá.")
+}
+
+```
+
+El stack guardado localmente en formato .tif se lee, pues permite un procesamiento más rápido que a través de lectura de los archivos .vrt. Se armoniza el sistema de coordenadas de referencia de los datos de pedodiversidad de UCS y se estandarizan las unidades de las variables.
+
+```{r}
+# Cargar el archivo .tif como un SpatRaster
+stack_suelo_tif <- rast(out_raster)
+
+#Se normalizan las bandas
+normalize_band <- function(x) (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+stack_suelo_z <- app(stack_suelo_tif, normalize_band)
+```
