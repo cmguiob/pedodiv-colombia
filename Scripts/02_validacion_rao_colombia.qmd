@@ -27,6 +27,7 @@ pacman::p_load(char = c(
   "terra", #procesamiento raster
   "ggplot2",  #graficación
   "patchwork", #mosaicos gráficos
+  "rasterdiv", #para calcular raster
   "wesanderson", #paleta de colores
   "qs" #escribir y leer rápidamente objetos R
   )
@@ -36,7 +37,17 @@ pacman::p_load(char = c(
 pal <- wes_palette("Zissou1", 100, type = "continuous")
 ```
 
-## 1. Carga de datos de pedodiversidad de UCS
+## 1. Carga de datos
+
+### 1.1 Polígono de área de interés
+
+Dado que el cálculo para un raster tan grande toma mucho tiempo, se debe hacer el cálculo para un area de interés. Esta puede corresponder a un área donde coincidan polígonos de UCS de alta y baja pedodiversidad. Esto se realizó en el análisis de patrones de puntos. Se importan los "hulls" de dos áreas de interés.
+
+```{r}
+
+```
+
+### 1.2 Carga de datos de pedodiversidad de UCS
 
 Los datos producto del procesamiento de UCS, se descargan desde un repositorio abierto de Zenodo.
 
@@ -60,7 +71,7 @@ head(ucs_rao_sf)
 
 Se valida que el archivo se cargó correctamente.
 
-## 2. Carga de datos de SoilGrids
+## 1.3 Carga de datos de SoilGrids
 
 Se cargan los datos de valores promedio para varias propiedades. Los valores promedio es una de las estadístics reportadas en SoilGrids. Otras opciones son algunos quantiles o la incertidumbre.
 
@@ -124,6 +135,14 @@ if (!file.exists(out_raster)) {
 
 ```
 
+## 2 Procesamiento
+
+### 2.1 Preparación de pedodiversidad de UCS
+
+Se debe hacer el recorte a las áreas de interés y la rasterización
+
+### 2.2 Preparación de rasters de SoilGrids
+
 El stack guardado localmente en formato .tif se lee, pues permite un procesamiento más rápido que a través de lectura de los archivos .vrt. Se armoniza el sistema de coordenadas de referencia de los datos de pedodiversidad de UCS y se estandarizan las unidades de las variables.
 
 ```{r}
@@ -133,4 +152,38 @@ stack_suelo_tif <- rast(out_raster)
 #Se normalizan las bandas
 normalize_band <- function(x) (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
 stack_suelo_z <- app(stack_suelo_tif, normalize_band)
+
+#Se compara con 
+plot(stack_suelo_z[[c(1, 8, 15, 22)]])
+```
+
+Se reproyecta y se hace el recorte al área de interés
+
+```{r}
+
+```
+
+### 2.3 Cálculo de pedodiversidad espectral de Rao
+
+A continuación se calcula diversidad usando **`paRao()`** (Parametric Rao index), que permite calcular el **índice de Rao multidimensional** para pilas de rasters, tanto para datos espaciales como espacio-temporales (Rocchini et al. 2021). Tiene en cuenta distancias euclidianas entre bandas del stack de propiedades de suelos de SoilGrids. Esto no equivale a la métrica taxonómica jerárquica de UCS (ver Rossiter et al. 2017), sino a heterogeneidad multivariante espectral/edáfica.
+
+En el siguiente enlace, los autores describen la aplicación de la función Rao multidimensional: <https://mattmar.github.io/rasterdiv/articles/rasterdiv_03_Advanced_multidimension_Rao.html>
+
+Basado en el análisis de puntos realizados para hotspots y coldspots de pedodiversidad de polígonos UCS, se identificaron umbrales de aglomeración entre 0 - 100 y 0 - 250 km. Por lo tanto, para capturar una heterogeneidad equivalente con rasterdiv, se usan ventanas intermedias, de 50, 100, 200 y 500 pixeles, equivalentes a distancias de 12.5 km, 25 km, 50 km y 125 km. El CRS homosínclico mundial (EPSG:54052, World Bonne projection) usa metros como unidad de medida. \
+
+```{r}
+
+# Convierte el stack a una lista de SpatRaster (cada elemento una banda)
+soilgrids_z_list <- lapply(1:nlyr(stack_suelo_z), function(i) stack_suelo_z[[i]])
+
+# Calculo de rao multidimensional
+rao_51 <- paRao(
+  x = soilgrids_z_list,   # Usa la lista estandarizada
+  window = 11, #aprox 12.7 km de lado. La ventana debe ser de lado impar
+  alpha = 1, #peso de la matriz de distancia con media artimetica
+  na.tolerance = 1,
+  method = "multidimension",
+  rasterOut = TRUE,
+  simplify = 2 #número de cifras decimales
+)
 ```

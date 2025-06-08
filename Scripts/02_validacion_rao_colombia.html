@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="Carlos M. Guío Blanco">
+
+<title>Validación de pedodiversidad</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="02_validacion_rao_colombia_files/libs/clipboard/clipboard.min.js"></script>
+<script src="02_validacion_rao_colombia_files/libs/quarto-html/quarto.js"></script>
+<script src="02_validacion_rao_colombia_files/libs/quarto-html/popper.min.js"></script>
+<script src="02_validacion_rao_colombia_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="02_validacion_rao_colombia_files/libs/quarto-html/anchor.min.js"></script>
+<link href="02_validacion_rao_colombia_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="02_validacion_rao_colombia_files/libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="02_validacion_rao_colombia_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="02_validacion_rao_colombia_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="02_validacion_rao_colombia_files/libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Validación de pedodiversidad</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>Carlos M. Guío Blanco </p>
+          </div>
+  </div>
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Este cuaderno realiza la validación de los datos de pedodiversidad de Rao, calculada a partir de polígonos de UCS, frente a la diversidad de Rao calculada a partir de propiedades de los suelos a diferentes profundidades, extraidas de SoilGrids. A continuación se presenta:</p>
+<ol type="1">
+<li>La carga de datos de pedodiversidad basada en polígonos</li>
+<li>La carga de datos de SoilGrids</li>
+<li>Cálculo de pedodiversidad raster según Rocchini et al.(2017, 2021)</li>
+<li>Comparación de pedodiversidad espacializada</li>
+</ol>
+<section id="carga-de-datos-de-pedodiversidad-de-ucs" class="level2">
+<h2 class="anchored" data-anchor-id="carga-de-datos-de-pedodiversidad-de-ucs">1. Carga de datos de pedodiversidad de UCS</h2>
+<p>Los datos producto del procesamiento de UCS, se descargan desde un repositorio abierto de Zenodo.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Corre script externo</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">source</span>(here<span class="sc">::</span><span class="fu">here</span>(<span class="st">"Scripts"</span>, <span class="st">"00_funcion_carga_ucs_procesadas_qs.R"</span>), <span class="at">encoding =</span> <span class="st">"UTF-8"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Descargando archivo desde Zenodo con método 'curl'...</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Tamaño del archivo descargado: 212.9 MB</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>CRS detectado: MAGNA-SIRGAS 2018 / Origen-Nacional (EPSG:9377)</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">#Se crea una variable Qdens que expresa la densidad de Q</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>ucs_rao_sf <span class="ot">&lt;-</span> ucs_rao_sf <span class="sc">|&gt;</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  tidyr<span class="sc">::</span><span class="fu">drop_na</span>(Q) <span class="sc">|&gt;</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>  <span class="co"># se deja un mínimo diferente de cero para trabajar con logaritmos</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>  dplyr<span class="sc">::</span><span class="fu">mutate</span>(</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">Q =</span> <span class="fu">case_when</span>(Q <span class="sc">==</span> <span class="dv">0</span> <span class="sc">~</span> <span class="fl">0.000001</span>, <span class="cn">TRUE</span> <span class="sc">~</span> Q),</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">Qdens =</span> Q<span class="sc">/</span>AREA_HA,</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">log_Qdens =</span> <span class="fu">log</span>(Qdens)</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    ) </span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(ucs_rao_sf)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Simple feature collection with 6 features and 17 fields
+Geometry type: MULTIPOLYGON
+Dimension:     XY
+Bounding box:  xmin: 4558012 ymin: 1727707 xmax: 4567388 ymax: 1740702
+Projected CRS: MAGNA-SIRGAS 2018 / Origen-Nacional
+# A tibble: 6 × 18
+  UCSuelo CLIMA_1     PAISAJE TIPO_RELIE MATERIAL_P SUBGRUPO PERFILES PORCENTAJE
+  &lt;chr&gt;   &lt;chr&gt;       &lt;chr&gt;   &lt;chr&gt;      &lt;chr&gt;      &lt;chr&gt;    &lt;chr&gt;    &lt;chr&gt;     
+1 ALAa    Frío húmedo Altipl… Mesas      Cenizas v… Humic U… NA164, … 45, 40, 15
+2 ALAb    Frío húmedo Altipl… Mesas      Cenizas v… Humic U… NA164, … 45, 40, 15
+3 ALAb    Frío húmedo Altipl… Mesas      Cenizas v… Humic U… NA164, … 45, 40, 15
+4 ALAb    Frío húmedo Altipl… Mesas      Cenizas v… Humic U… NA164, … 45, 40, 15
+5 ALAb    Frío húmedo Altipl… Mesas      Cenizas v… Humic U… NA164, … 45, 40, 15
+6 ALAb    Frío húmedo Altipl… Mesas      Cenizas v… Humic U… NA164, … 45, 40, 15
+# ℹ 10 more variables: HUMEDAD &lt;chr&gt;, AREA_HA &lt;dbl&gt;, DES_AMB_ED &lt;chr&gt;,
+#   id_creado &lt;int&gt;, DeNombre &lt;chr&gt;, geometry &lt;MULTIPOLYGON [m]&gt;, Q &lt;dbl&gt;,
+#   asignacion_igual_i &lt;lgl&gt;, Qdens &lt;dbl&gt;, log_Qdens &lt;dbl&gt;</code></pre>
+</div>
+</div>
+<p>Se valida que el archivo se cargó correctamente.</p>
+</section>
+<section id="carga-de-datos-de-soilgrids" class="level2">
+<h2 class="anchored" data-anchor-id="carga-de-datos-de-soilgrids">2. Carga de datos de SoilGrids</h2>
+<p>Se cargan los datos de valores promedio para varias propiedades. Los valores promedio es una de las estadístics reportadas en SoilGrids. Otras opciones son algunos quantiles o la incertidumbre.</p>
+<p>Las propiedades de <a href="https://www.isric.org/explore/soilgrids/faq-soilgrids#What_do_the_filename_codes_mean">SoilGrids se reportan según las siguientes unidades</a>:</p>
+<ul>
+<li>bdod (Densidad aparente de la fracción fina del suelo): <strong>cg/cm³</strong></li>
+<li>cec (Capacidad de intercambio catiónico del suelo): <strong>mmol(c)/kg</strong></li>
+<li>cfvo (Fracción volumétrica de fragmentos gruesos (&gt; 2 mm)): <strong>cm³/dm³</strong></li>
+<li>clay (Proporción de partículas de arcilla (&lt; 0.002 mm) en la fracción fina): <strong>g/kg</strong></li>
+<li>nitrogen (Nitrógeno total (N)): <strong>cg/kg</strong></li>
+<li>phh2o (pH del suelo en agua): <strong>pH x10</strong></li>
+<li>sand (Proporción de partículas de arena (&gt; 0.05/0.063 mm) en la fracción fina): <strong>g/kg</strong></li>
+<li>silt (Proporción de partículas de limo (≥ 0.002 mm y ≤ 0.05/0.063 mm) en la fracción fina): <strong>g/kg</strong></li>
+<li>soc (Contenido de carbono orgánico del suelo en la fracción fina):<strong>dg/kg</strong></li>
+<li>ocd (Densidad de carbono orgánico): <strong>hg/m³</strong></li>
+<li>ocs (Reservas de carbono orgánico): <strong>t/ha</strong></li>
+</ul>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Crea un objeto tipo función al ejecutar un  script externo</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="fu">source</span>(<span class="st">"00_funcion_carga_soilgrids.R"</span>)</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Se llama la función con los argumentos adaptados al proyecto</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>stack_suelo <span class="ot">&lt;-</span> <span class="fu">descargar_soilgrids_stack</span>(</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">vars =</span> <span class="fu">c</span>(<span class="st">"bdod"</span>, <span class="st">"sand"</span>, <span class="st">"silt"</span>, <span class="st">"clay"</span>, <span class="st">"soc"</span>, <span class="st">"cec"</span>, <span class="st">"phh2o"</span>),</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">depths =</span> <span class="fu">c</span>(<span class="st">"0-5cm"</span>, <span class="st">"5-15cm"</span>, <span class="st">"15-30cm"</span>, <span class="st">"60-100cm"</span>),</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">stats =</span> <span class="fu">c</span>(<span class="st">"mean"</span>),</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">resolucion =</span> <span class="fu">c</span>(<span class="dv">250</span>, <span class="dv">250</span>),</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>  <span class="co">#define ruta de descarga y verifica si ya existen los archivos</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">ruta_vrt =</span> here<span class="sc">::</span><span class="fu">here</span>(<span class="st">"Data"</span>, <span class="st">"OUT_SoilGrids_vrt"</span>) </span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Installing package into 'C:/Users/cguio/AppData/Local/R/win-library/4.5'
+(as 'lib' is unspecified)</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: unable to access index for repository http://www.stats.ox.ac.uk/pub/RWin/bin/windows/contrib/4.5:
+  cannot open URL 'http://www.stats.ox.ac.uk/pub/RWin/bin/windows/contrib/4.5/PACKAGES'</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>package 'gdalUtilities' successfully unpacked and MD5 sums checked
+
+The downloaded binary packages are in
+    C:\Users\cguio\AppData\Local\Temp\Rtmp0sxcF8\downloaded_packages</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>
+gdalUtilities installed</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning in descargar_soilgrids_stack(vars = c("bdod", "sand", "silt", "clay", : El sistema de referencia de coordenadas (CRS) por defecto es Homosínclico Mundial (EPSG:54052).
+El bounding box proporcionado está en metros sobre este CRS.
+Si se desea trabajar en EPSG:4326 u otro CRS geográfico, reproyectar después con `terra::project()`.</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: bdod_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/bdod_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: bdod_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/bdod_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: bdod_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/bdod_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: bdod_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/bdod_60-100cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: sand_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/sand_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: sand_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/sand_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: sand_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/sand_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: sand_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/sand_60-100cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: silt_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/silt_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: silt_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/silt_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: silt_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/silt_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: silt_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/silt_60-100cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: clay_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/clay_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: clay_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/clay_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: clay_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/clay_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: clay_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/clay_60-100cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: soc_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/soc_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: soc_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/soc_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: soc_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/soc_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: soc_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/soc_60-100cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: cec_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/cec_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: cec_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/cec_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: cec_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/cec_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: cec_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/cec_60-100cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: phh2o_0-5cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/phh2o_0-5cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: phh2o_5-15cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/phh2o_5-15cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: phh2o_15-30cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/phh2o_15-30cm_mean.vrt</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Procesando: phh2o_60-100cm_mean</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Usando VRT existente: M:/My Drive/02_PROYECTOS/PROYECTOS MIXTOS/PROPUESTAS INVESTIGACION/2025_UNALAG/DESARROLLO/PROYECTO DE CODIGO/pedodiv-colombia/Data/OUT_SoilGrids_vrt/phh2o_60-100cm_mean.vrt</code></pre>
+</div>
+</div>
+<p>Se valida que los archivos se cargaron correctamente.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb69"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb69-1"><a href="#cb69-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Validación rápida: nombres y visual</span></span>
+<span id="cb69-2"><a href="#cb69-2" aria-hidden="true" tabindex="-1"></a><span class="fu">print</span>(<span class="fu">names</span>(stack_suelo))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code> [1] "bdod_0-5cm_mean"     "bdod_5-15cm_mean"    "bdod_15-30cm_mean"  
+ [4] "bdod_60-100cm_mean"  "sand_0-5cm_mean"     "sand_5-15cm_mean"   
+ [7] "sand_15-30cm_mean"   "sand_60-100cm_mean"  "silt_0-5cm_mean"    
+[10] "silt_5-15cm_mean"    "silt_15-30cm_mean"   "silt_60-100cm_mean" 
+[13] "clay_0-5cm_mean"     "clay_5-15cm_mean"    "clay_15-30cm_mean"  
+[16] "clay_60-100cm_mean"  "soc_0-5cm_mean"      "soc_5-15cm_mean"    
+[19] "soc_15-30cm_mean"    "soc_60-100cm_mean"   "cec_0-5cm_mean"     
+[22] "cec_5-15cm_mean"     "cec_15-30cm_mean"    "cec_60-100cm_mean"  
+[25] "phh2o_0-5cm_mean"    "phh2o_5-15cm_mean"   "phh2o_15-30cm_mean" 
+[28] "phh2o_60-100cm_mean"</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb71"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb71-1"><a href="#cb71-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Selecciona algunas capas por número de índice</span></span>
+<span id="cb71-2"><a href="#cb71-2" aria-hidden="true" tabindex="-1"></a>stack_sub <span class="ot">&lt;-</span> stack_suelo[[<span class="fu">c</span>(<span class="dv">1</span>, <span class="dv">8</span>, <span class="dv">15</span>, <span class="dv">22</span>)]]</span>
+<span id="cb71-3"><a href="#cb71-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb71-4"><a href="#cb71-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Grafica solo esas capas (en un mismo panel multi-cuadro)</span></span>
+<span id="cb71-5"><a href="#cb71-5" aria-hidden="true" tabindex="-1"></a><span class="fu">plot</span>(stack_sub)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="02_validacion_rao_colombia_files/figure-html/unnamed-chunk-2-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+<p>Se descargan los datos en formato .tif localmente. Esto se realiza únicamente si el archivo aún no existe. Estos datos no se reflejan en el repositorio remoto (se maneja con .gitignore), ya que por su tamaño tiene conflicto con large files de GitHub.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb72"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb72-1"><a href="#cb72-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Definir la ruta de salida</span></span>
+<span id="cb72-2"><a href="#cb72-2" aria-hidden="true" tabindex="-1"></a>out_raster <span class="ot">&lt;-</span> <span class="fu">here</span>(<span class="st">"Data"</span>, <span class="st">"OUT_soilgrids_stack.tif"</span>)</span>
+<span id="cb72-3"><a href="#cb72-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb72-4"><a href="#cb72-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Verificar si el archivo ya existe antes de escribir</span></span>
+<span id="cb72-5"><a href="#cb72-5" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">file.exists</span>(out_raster)) {</span>
+<span id="cb72-6"><a href="#cb72-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">writeRaster</span>(stack_suelo, <span class="at">filename =</span> out_raster, <span class="at">overwrite =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb72-7"><a href="#cb72-7" aria-hidden="true" tabindex="-1"></a>} <span class="cf">else</span> {</span>
+<span id="cb72-8"><a href="#cb72-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">message</span>(<span class="st">"El archivo ya existe, no se sobrescribirá."</span>)</span>
+<span id="cb72-9"><a href="#cb72-9" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>
+|---------|---------|---------|---------|
+=========================================
+                                          </code></pre>
+</div>
+</div>
+<p>El stack guardado localmente en formato .tif se lee, pues permite un procesamiento más rápido que a través de lectura de los archivos .vrt. Se armoniza el sistema de coordenadas de referencia de los datos de pedodiversidad de UCS y se estandarizan las unidades de las variables.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb74"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb74-1"><a href="#cb74-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Cargar el archivo .tif como un SpatRaster</span></span>
+<span id="cb74-2"><a href="#cb74-2" aria-hidden="true" tabindex="-1"></a>stack_suelo_tif <span class="ot">&lt;-</span> <span class="fu">rast</span>(out_raster)</span>
+<span id="cb74-3"><a href="#cb74-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb74-4"><a href="#cb74-4" aria-hidden="true" tabindex="-1"></a><span class="co">#Se normalizan las bandas</span></span>
+<span id="cb74-5"><a href="#cb74-5" aria-hidden="true" tabindex="-1"></a>normalize_band <span class="ot">&lt;-</span> <span class="cf">function</span>(x) (x <span class="sc">-</span> <span class="fu">mean</span>(x, <span class="at">na.rm=</span><span class="cn">TRUE</span>)) <span class="sc">/</span> <span class="fu">sd</span>(x, <span class="at">na.rm=</span><span class="cn">TRUE</span>)</span>
+<span id="cb74-6"><a href="#cb74-6" aria-hidden="true" tabindex="-1"></a>stack_suelo_z <span class="ot">&lt;-</span> <span class="fu">app</span>(stack_suelo_tif, normalize_band)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>
+|---------|---------|---------|---------|
+=========================================
+                                          </code></pre>
+</div>
+</div>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
