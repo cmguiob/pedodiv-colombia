@@ -59,7 +59,7 @@ Los datos producto del procesamiento, se han subido a un repositorio de Zenodo.
 #ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
 
 # Corre script externo
-source(here::here("Scripts", "00_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 head(ucs_rao_sf)
 ```
@@ -69,7 +69,7 @@ Se cargan los datos de departamentos involucrados en el set de datos de pedodive
 ```{r}
 
 # Define ruta y nombre de capa de geopackage de departamentos
-deptos_ruta <- here("Data", "INPUT_departamentos_IGAC_Abril_2025.gpkg")
+deptos_ruta <- here("Data", "INP_departamentos_IGAC_Abril_2025.gpkg")
 capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]
 
 # Carga geopackage de dpartamentos

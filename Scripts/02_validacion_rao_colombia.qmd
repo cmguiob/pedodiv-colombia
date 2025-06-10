@@ -179,7 +179,7 @@ soilgrids_z_list <- lapply(1:nlyr(stack_suelo_z), function(i) stack_suelo_z[[i]]
 # Calculo de rao multidimensional
 rao_51 <- paRao(
   x = soilgrids_z_list,   # Usa la lista estandarizada
-  window = 11, #aprox 12.7 km de lado. La ventana debe ser de lado impar
+  window = 5, #aprox 12.7 km de lado. La ventana debe ser de lado impar
   alpha = 1, #peso de la matriz de distancia con media artimetica
   na.tolerance = 1,
   method = "multidimension",

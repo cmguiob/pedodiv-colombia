@@ -1,0 +1,167 @@
+---
+title: "Análisis de regresión con modelos lineales generalziados (GLM)"
+author: "Carlos M. Guío Blanco"
+format: html
+editor: visual
+---
+
+Este cuaderno implementa en un solo flujo la conexión de R con Google Earth Engine para derivar atributos geomorfométricos e hidroclimáticos satelitales, cuantificar la heterogeneidad interna de estos atributos para cada Unidad Cartográfica de Suelo (UCS) mediante el coeficiente de variación, y finalmente ajustar un modelo logístico que use estas covariables satelitales para explicar la ocurrencia de “hotspots” de pedodiversidad.
+
+**Estructura del script**
+
+1.  **Inicialización**: carga de librerías y autenticación en Earth Engine.
+2.  **Carga de vectores**: UCS armonizadas y definición del límite de estudio (Andina, Caribe, Pacífico).
+3.  **Derivación de rasters**: cálculo de pendiente y curvaturas (TAGEE), LST y VH/VV.
+4.  **Extracción de métricas**: media, desviación estándar y CV por polígono para cada variable.
+5.  **Modelado**: ensamblaje de datos y ajuste de un GLM logit ponderado por área para predecir hotspots.
+
+```{r}
+
+#Para exportar como .R plano
+# knitr::purl('05_analisis_glm_rao_colombia.qmd')
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Carga de librerías "inocentes"
+pacman::p_load(char = c("here", "remotes", "sf", "geojsonio","dplyr", "ggplot2", "patchwork", "wesanderson", "qs"))
+
+# ==== Creación de ambiente Miniconda para reticulate ============================
+
+#Esto solo se necesita hacerlo una vez.
+#reticulate::conda_create("rgee_py", packages = "python=3.12")
+
+# ==== Selección entorno ya existente antes de cualquier llamado que use Python ====
+reticulate::use_condaenv("rgee_py", required = TRUE)
+reticulate::py_config() # # Verifica que el python sea Miniconda3/envs/rgee_py/python.exe
+
+# Carga librerías que usan Python
+library(reticulate)
+library(rgee)
+library(googledrive)
+
+
+# ==== Autenticación y backend Python ====
+ee_clean_user_credentials()      # Limpia credenciales de GEE
+ee_clean_pyenv()           # Limpia variables de entorno de reticulate
+reticulate::py_run_string("import ee; ee.Authenticate()")
+reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')")
+
+# ==== Inicializa rgee (ignora asset_home si aparece, ya existe) ====
+tryCatch(
+  rgee::ee_Initialize(drive = FALSE, project = 'even-electron-461718-g2'),
+  error = function(e) message("Si pide asset home y ya existe, solo ESC y sigue")
+)
+```
+
+Prueba de funcionamiento de rgee
+
+```{r}
+
+# Se consultan datos de DEM
+img <- ee$Image("USGS/SRTMGL1_003")
+
+#Consulta que propiedades están disponibles
+img$propertyNames()$getInfo()
+```
+
+## 1. Carga de datos
+
+**Carga de datos de pedodiversidad de UCS**
+
+Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo.
+
+```{r carga_pedodiversidad}
+
+# Corre script externo para cargar
+source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+
+# Asignación de id único para cada polígono
+ucs_rao_sf <- ucs_rao_sf |> mutate(id = row_number())
+
+head(ucs_rao_sf)
+```
+
+**Carga de polígono de área de estudio**
+
+Se cargan los polígonos de los departamentos de la zona andina, pacífica y caribe. Se fusionan en uno solo y se armonizan con el crs de pedodiversidad de UCS, para delimitar el área de estudio.
+
+```{r carga_poligono}
+
+# Define ruta y nombre de capa de geopackage de departamentos
+deptos_ruta <- here("Data", "INP_departamentos_IGAC_Abril_2025.gpkg")
+capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]
+
+# Carga geopackage de dpartamentos
+departamentos_sf <- sf::st_read(
+  deptos_ruta,
+  layer = capa_nombre_deptos,
+  quiet = TRUE
+  ) |>
+  # Se seleccionan 21 departamentos de la zona Andina, Caribe y Pacífica
+  dplyr::filter(DeNombre %in% c(
+    "Antioquia", 
+    "Atlántico",
+    "Bolívar",
+    "Boyacá",
+    "Caldas",
+    "Cauca",
+    "Cesar",
+    "Chocó", 
+    "Córdoba",
+    "Cundinamarca",
+    "Huila",
+    "La Guajira",
+    "Magdalena",
+    "Nariño",
+    "Norte de Santander",
+    "Quindío",
+    "Risaralda",
+    "Santander", 
+    "Sucre",
+    "Tolima",
+    "Valle del Cauca")
+    ) |>
+  tidyr::drop_na()
+  
+
+# departamento_1_sf pasa de "SHAPE" a "geometry"
+names(departamentos_sf)[names(departamentos_sf) == "SHAPE"] <- "geometry"
+departamentos_sf <- sf::st_as_sf(as.data.frame(departamentos_sf), sf_column_name = "geometry")
+
+# Aseguramos que ambos datasets tengan la misma proyección
+departamentos_sf <- st_transform(departamentos_sf, st_crs(ucs_rao_sf))
+
+# Se unen los polígonos en uno solo
+limite_poly <- st_union(departamentos_sf) 
+
+```
+
+**Conversión a objetos EE**
+
+Convierte objetos de R (ucs_rao_sf y limite_poly, que son sf) en ee\$FeatureCollection, es decir, en objetos que el API de Earth Engine entiende y con los que se puede trabajar directamente en la nube
+
+```{r}
+
+
+ucs_ee     <- sf_as_ee(ucs_rao_sf)
+estudio_ee <- sf_as_ee(limite_poly)
+
+```
+
+## 2. Procesamiento
+
+A continuación se calculan los índices geomorfométrics e hidroclimáticos. Se utiliza TAGEE ...
+
+**DEM**
+
+suavizado que facilita el cálculo más estable de pendientes y curvaturas, porque atenúa irregularidades puntuales que podrían disparar valores extremos en los derivadores topográficos.
+
+```{r}
+
+# Carga y suavizado del DEM SRTM 30 m
+dem_orig   <- ee$Image("USGS/SRTMGL1_003")$rename("DEM")$clip(estudio_ee)
+gauss      <- ee$Kernel$gaussian(radius=3, sigma=2, units="pixels", normalize=TRUE)
+dem_smooth <- dem_orig$convolve(gauss)$resample("bilinear")
+
+```
