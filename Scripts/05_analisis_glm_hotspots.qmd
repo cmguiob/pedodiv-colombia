@@ -26,14 +26,11 @@ if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
 # Carga de librerías "inocentes"
 pacman::p_load(char = c("here", "remotes", "sf", "geojsonio","dplyr", "ggplot2", "patchwork", "wesanderson", "qs"))
 
-# ==== Creación de ambiente Miniconda para reticulate ============================
 
-#Esto solo se necesita hacerlo una vez.
-#reticulate::conda_create("rgee_py", packages = "python=3.12")
 
-# ==== Selección entorno ya existente antes de cualquier llamado que use Python ====
-reticulate::use_condaenv("rgee_py", required = TRUE)
-reticulate::py_config() # # Verifica que el python sea Miniconda3/envs/rgee_py/python.exe
+#Selección entorno ya existente antes de cualquier llamado que use Python: only needed while the interpreter path was not yet fixed
+#reticulate::use_condaenv("rgee_py", required = TRUE) 
+#reticulate::py_config() # # Verifica que el python sea Miniconda3/envs/rgee_py/python.exe
 
 # Carga librerías que usan Python
 library(reticulate)
