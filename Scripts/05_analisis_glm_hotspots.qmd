@@ -29,7 +29,7 @@ pacman::p_load(char = c("here", "remotes", "sf", "geojsonio","dplyr", "ggplot2",
 
 
 #Selección entorno ya existente antes de cualquier llamado que use Python: only needed while the interpreter path was not yet fixed
-#reticulate::use_condaenv("rgee_py", required = TRUE) 
+reticulate::use_condaenv("rgee_py", required = TRUE) 
 #reticulate::py_config() # # Verifica que el python sea Miniconda3/envs/rgee_py/python.exe
 
 # Carga librerías que usan Python
@@ -46,7 +46,12 @@ reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-46171
 
 # ==== Inicializa rgee (ignora asset_home si aparece, ya existe) ====
 tryCatch(
-  rgee::ee_Initialize(drive = FALSE, project = 'even-electron-461718-g2'),
+  rdee::ee_Initialize(
+  drive       = FALSE,                         # or TRUE if you want Drive export
+  project     = "even-electron-461718-g2",     # your Cloud Project
+  asset_home  = "users/cmguiob_g",             # <-- tell rgee the folder exists
+  quiet       = TRUE
+),
   error = function(e) message("Si pide asset home y ya existe, solo ESC y sigue")
 )
 ```
@@ -148,11 +153,11 @@ estudio_ee <- sf_as_ee(limite_poly)
 
 ## 2. Procesamiento
 
-A continuación se calculan los índices geomorfométrics e hidroclimáticos. Se utiliza TAGEE ...
+A continuación se calculan los índices geomorfométricos e hidroclimáticos. Se utiliza TAGEE ...
 
 **DEM**
 
-suavizado que facilita el cálculo más estable de pendientes y curvaturas, porque atenúa irregularidades puntuales que podrían disparar valores extremos en los derivadores topográficos.
+Suavizado que facilita el cálculo más estable de pendientes y curvaturas, porque atenúa irregularidades puntuales que podrían disparar valores extremos en los derivadores topográficos.
 
 ```{r}
 
@@ -161,4 +166,59 @@ dem_orig   <- ee$Image("USGS/SRTMGL1_003")$rename("DEM")$clip(estudio_ee)
 gauss      <- ee$Kernel$gaussian(radius=3, sigma=2, units="pixels", normalize=TRUE)
 dem_smooth <- dem_orig$convolve(gauss)$resample("bilinear")
 
+```
+
+Verificación de la operación
+
+```{r}
+
+# 1. Centrar el visor en tu área de interés
+Map$setCenter(lon = -74, lat = 4, zoom = 6)
+
+# 2. Añadir el DEM original (sin suavizar)
+Map$addLayer(
+  dem_orig,
+  visParams = list(min = 0, max = 3000,
+                   palette = c("blue","green","yellow","red")),
+  name = "DEM original"
+)
+
+# 3. Añadir el DEM suavizado
+Map$addLayer(
+  dem_smooth,
+  visParams = list(min = 0, max = 3000,
+                   palette = c("blue","green","yellow","red")),
+  name = "DEM suavizado"
+)
+
+```
+
+**Indices derivados del DEM**
+
+Se importa TAGEE...
+
+```{r}
+
+# 7. Importar y ejecutar TAGEE en GEE para atributos de terreno
+tagee      <- ee$call("require", "users/zecojls/TAGEE:TAGEE-functions")
+dem_attr   <- tagee$terrainAnalysis(tagee, dem_smooth)
+
+```
+
+```{r}
+
+# Selección de bandas y conversión a valor absoluto para curvaturas
+slope      <- dem_attr$select("Slope")$rename("slope")
+# Para curvaturas, usamos el valor absoluto para que la media no tienda a cero
+horiz_curv <- dem_attr$select("HorizontalCurvature")$rename("horiz_curv")$abs()
+vert_curv  <- dem_attr$select("VerticalCurvature")$rename("vert_curv")$abs()
+```
+
+```{r}
+
+# 9. Visualización espacial en el visor de rgee ----------------------------
+Map$setCenter(lon = -74, lat = 4, zoom = 6)
+Map$addLayer(slope,      visParams=list(min=0,   max=60, palette=viridis::viridis(10)), name="Pendiente")
+Map$addLayer(horiz_curv, visParams=list(min=0,   max=0.15, palette=viridis::magma(10)),  name="Curvatura Horiz. (abs)")
+Map$addLayer(vert_curv,  visParams=list(min=0,   max=0.15, palette=viridis::magma(10)),  name="Curvatura Vert. (abs)")
 ```
