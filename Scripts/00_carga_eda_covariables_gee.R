@@ -1,13 +1,4 @@
----
-title: "Carga y procesamiento de covariables GEE via rgee"
-author: "Carlos M. Guío Blanco"
-format: html
-editor: visual
----
-
-Se debe identificar si Python 3 está instalado, en caso que no, instalarlo. La función de carga de datos de GEE usará la versión de Python 3 instalada. En caso de necesitar direccionar a reticulate a una instalación de python deseada de miniconda, se crea un entorno llamado "rgee_py" con Python 3.12 (compatible y recomendado)
-
-```{r configuracion}
+## ----configuracion-------------------------------------------------------------------------------------------
 
 #Para exportar como .R plano
 # knitr::purl('05_analisis_glm_rao_colombia.qmd')
@@ -22,6 +13,8 @@ pacman::p_load(char = c("here", "remotes", "sf", "geojsonio","dplyr", "ggplot2",
 
 #Esto solo se necesita hacerlo una vez.
 #reticulate::conda_create("rgee_py", packages = "python=3.12")
+reticulate::py_config()  # Verifica que el python sea Miniconda3/envs/rgee_py/python.exe
+ee_check() # Check non-R dependencies
 
 # ==== Selección entorno ya existente antes de cualquier llamado que use Python ====
 reticulate::use_condaenv("rgee_py", required = TRUE)
@@ -40,17 +33,13 @@ reticulate::py_run_string("import ee; ee.Authenticate()")
 reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')")
 
 # ==== Inicializa rgee (ignora asset_home si aparece, ya existe) ====
-#tryCatch(
-#  rgee::ee_Initialize(drive = FALSE, project = 'even-electron-461718-g2'),
-#  error = function(e) message("Si pide asset home y ya existe, solo ESC y sigue")
-#)
-```
+tryCatch(
+  rgee::ee_Initialize(drive = FALSE, project = 'even-electron-461718-g2'),
+  error = function(e) message("Si pide asset home y ya existe, solo ESC y sigue")
+)
 
-## 1. Verificación de funcionamiento de rgee
 
-Se prueba una consulta simple
-
-```{r verifica_info}
+## ----verifica_info-------------------------------------------------------------------------------------------
 
 # Se consultan datos de DEM
 img <- ee$Image("USGS/SRTMGL1_003")
@@ -60,11 +49,9 @@ img$propertyNames()$getInfo()
 
 # Consultar una propiedad específica, e.g. keywords
 img$get("keywords")$getInfo()
-```
 
-Se prueba una visualización simple
 
-```{r verifica_imagen}
+## ----verifica_imagen-----------------------------------------------------------------------------------------
 
 vis_params <- list(
   min = 0,
@@ -75,27 +62,17 @@ vis_params <- list(
 # Centra en Colombia
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(img, vis_params, "SRTM DEM")
-```
 
-## 2. Carga de datos
 
-### 2.1 Carga de datos de pedodiversidad de UCS
-
-Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo.
-
-```{r carga_pedodiversidad}
+## ----carga_pedodiversidad------------------------------------------------------------------------------------
 
 # Corre script externo
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 head(ucs_rao_sf)
-```
 
-### 2.2 Carga de polígono de área de estudio
 
-Se cargan los polígonos de los departamentos de la zona andina, pacífica y caribe. Se fusionan en uno solo y se armonizan con el crs de pedodiversidad de UCS, para delimitar el área de estudio.
-
-```{r carga_poligono}
+## ----carga_poligono------------------------------------------------------------------------------------------
 
 # Define ruta y nombre de capa de geopackage de departamentos
 deptos_ruta <- here("Data", "INP_departamentos_IGAC_Abril_2025.gpkg")
@@ -146,15 +123,9 @@ limite_poly <- st_union(departamentos_sf)
 
 # Aplica un buffer pequeño (ejemplo: 1 km) para limitar efectos de borde
 limite_buffer <- st_buffer(limite_poly, dist = 1000)
-```
 
-### 2.3 Carga de datos de Google Earth Engine
 
-A continuación se definien y envían parámetros de procesamiento generales para todos los productos satelitales, para ejecutar en GEE. Los datos ya procesados se envian a Google Drive a la carpeta GEE_exports, desde donde deben reubicarse. Las tareas se puede monitorear en [Earth Engine Task Manager](#0)
-
-Se definen parámetros de extensión, CRS y resolución para armonizar los datos de GEE con con los datos de pedodiversidad de UCS. Para la definición del área de recorte se toma un buffer. Esto amortiguará posteriormente efectos de borde en el cálculo de la diversidad.
-
-```{r parametros_gee}
+## ----parametros_gee------------------------------------------------------------------------------------------
 
 # Crea el buffer en metros en 9377
 buffer_10km_sf <- st_buffer(limite_poly, dist = 10000) 
@@ -167,50 +138,42 @@ buffer_10km_bbox <- buffer_10km_gee$bounds()
 target_crs <- "EPSG:4326"    # Sistema soportado por GEE para exportación universal
 target_scale <- 50           # Resolución de pixel objetivo (50 m)
 export_folder <- "GEE_exports" # Carpeta destino en Google Drive "My Drive"
-```
 
-**DEM SRTM 30 m (remuestreado a 50 m)**
 
-Se procesa GEE y se envía a cuenta de Google Drive asociada en el proceso de autenticación.
+## ----tarea_DEM-----------------------------------------------------------------------------------------------
 
-```{r tarea_DEM}
-
-# Selecciona DEM SRTM 30m y recorta al buffer del área de estudio
-dem <- ee$Image("USGS/SRTMGL1_003")$clip(buffer_10km_gee)
+# 1. Selecciona DEM SRTM 30m y recorta al buffer del área de estudio
+dem <- ee$Image("USGS/SRTMGL1_003")$clip(buffer_10km_bbox)
 
 # 2. Visualiza en el visor antes de exportar (verifica recorte)
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(dem, visParams = list(min = 0, max = 3000), name = "DEM SRTM (nativo 30m)")
 
-```
 
-Se **envía una tarea a la nube de Google Earth Engine**. GEE procesa la imagen (el clip, reproyección, remuestreo, etc.) y la **exporta a Google Drive** como un archivo GeoTIFF.
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
-# Remuestrea y reproyecta a 50m, CRS 9377 para garantizar co-registro con otras variables
+# 3. Remuestrea y reproyecta a 50m, CRS 9377 para garantizar co-registro con otras variables
 dem_proj <- dem$reproject(crs = target_crs, scale = target_scale)
 
 
-# Exporta a Google Drive, con todos los parámetros del stack final
+# 4. Exporta a Google Drive, con todos los parámetros del stack final
 task_dem <- ee$batch$Export$image$toDrive(
   image = dem_proj,                          # imagen a exportar
-  description = "DEM_SRTM_50m_4326_clip",         # nombre descriptivo de la tarea
+  description = "DEM_SRTM_50m_4326",         # nombre descriptivo de la tarea
   folder = export_folder,                    # carpeta en tu Google Drive
-  fileNamePrefix = "DEM_SRTM_50m_4326_clip",      # nombre del archivo
+  fileNamePrefix = "DEM_SRTM_50m_4326",      # nombre del archivo
   region = buffer_10km_bbox,                # región a exportar (el buffer de 100 km)
   scale = target_scale,                      # resolución (50 m)
   crs = target_crs,                          # proyección
   maxPixels = 1e13                           # límite para exportar imágenes grandes
 )
 
-# Inicia la tarea de exportación (esto se procesa en la nube de GEE).
+# 5. Inicia la tarea de exportación (esto se procesa en la nube de GEE).
 task_dem$start()
-```
 
-**Pendiente a partir SRTM 30 m (remuestreado a 50 m)**
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 # Calcula pendiente (grados) usando el DEM ya recortado
 slope <- ee$Terrain$slope(dem)
@@ -233,11 +196,9 @@ task_slope <- ee$batch$Export$image$toDrive(
   maxPixels = 1e13
 )
 task_slope$start()
-```
 
-**LST Landsat 8 (mediana)**
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 # 1. Selecciona la colección de imágenes de Landsat 8 Collection 2 Nivel 2 (procesamiento superficial)
 landsat_col <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")
@@ -277,13 +238,9 @@ task_lst <- ee$batch$Export$image$toDrive(
 )
 task_lst$start()
 
-```
 
-**Sentinel-1 VH/VV (Mediana multianual)**
 
-Se usa **Sentinel-1 VH/VV como proxy de humedad superficial** porque en la banda C, la retrodispersión procedente de suelos desnudos o con vegetación rala está fuertemente influida por la constante dieléctrica de la superficie, la cual depende, a su vez, del contenido volumétrico de agua. Utilizar conjuntamente los canales de polarización cruzada (VH) y copolarizada (VV) —o bien su cociente— reduce los efectos de la rugosidad superficial y aumenta la sensibilidad a la humedad (Ulaby & Elachi, Radar Remote Sensing, 1990).
-
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 # 1. Selecciona la colección Sentinel-1 GRD (Ground Range Detected)
 s1_col <- ee$ImageCollection("COPERNICUS/S1_GRD")
@@ -332,11 +289,9 @@ task_vhvv <- ee$batch$Export$image$toDrive(
 task_vhvv$start()
 
 
-```
 
-**Precipitación CHIRPS (mediana multianual)**
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 
 # 1. Selecciona la colección CHIRPS diaria (UCSB-CHG/CHIRPS/DAILY)
@@ -369,18 +324,14 @@ task_precip <- ee$batch$Export$image$toDrive(
 )
 task_precip$start()
 
-```
-
-Verificación de serie de tiempo
-
-```{r}
 
 
-```
+## ------------------------------------------------------------------------------------------------------------
 
-## 3. Reubicación de los archivos exportados de GEE
 
-```{r}
+
+
+## ------------------------------------------------------------------------------------------------------------
 
 drive_auth()  # Esto abre una ventana de autenticación en el navegador
 
@@ -400,4 +351,4 @@ purrr::walk(archivos$id, function(file_id) {
 # Verifica lista los archivos en la carpeta destino por ID
 drive_ls(path = as_id(carpeta_destino_id))
 
-```
+
