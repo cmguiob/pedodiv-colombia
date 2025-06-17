@@ -4,11 +4,10 @@
 # knitr::purl('05_analisis_glm_hotspots.qmd')
 
 if (!"pacman" %in% installed.packages()) install.packages("pacman")
-pacman::p_load(here, remotes, sf, geojsonio, dplyr, ggplot2,
+pacman::p_load(here, remotes, sf, geojsonio, geojsonsf, dplyr, ggplot2,
                patchwork, wesanderson, qs)
 
-Sys.setenv(EARTHENGINE_DISABLE_PROMPTS = "TRUE")
-
+# Selección entorno ya existente antes de cualquier llamado que use Python
 reticulate::use_condaenv("rgee_py", required = TRUE)
 
 ## Librerías que usan Python 
@@ -16,23 +15,12 @@ library(reticulate)
 library(rgee)
 library(googledrive)
 
-## Autenticación y backend python
-#ee_clean_user_credentials()      # Limpia credenciales de GEE
+# ==== Autenticación y backend Python ====
+ee_clean_user_credentials()      # Limpia credenciales de GEE
 ee_clean_pyenv()           # Limpia variables de entorno de reticulate
-#reticulate::py_run_string("import ee; ee.Authenticate(); ee.Initialize(project='even-electron-461718-g2')")
+reticulate::py_run_string("import ee; ee.Authenticate()")
+reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')")
 
-# 1) Autenticación & inicialización EE con scope de Drive
-reticulate::py_run_string("
-import ee
-ee.Authenticate(scopes=[
-  'https://www.googleapis.com/auth/earthengine',
-  'https://www.googleapis.com/auth/drive'
-])
-ee.Initialize(project='even-electron-461718-g2')
-")
-
-# 2) Importa el módulo EE
-ee <- reticulate::import("ee", convert = FALSE)
 
 
 
@@ -44,6 +32,9 @@ img <- ee$Image("USGS/SRTMGL1_003")
 #Consulta que propiedades están disponibles
 img$propertyNames()$getInfo()
 
+# Consultar una propiedad específica, e.g. keywords
+img$get("keywords")$getInfo()
+
 
 ## ----carga_pedodiversidad------------------------------------------------------------------------------------
 
@@ -51,338 +42,139 @@ img$propertyNames()$getInfo()
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 # Asignación de id único para cada polígono
-ucs_rao_sf <- ucs_rao_sf |> dplyr::mutate(id = row_number())
+ucs_rao_sf <- ucs_rao_sf |> 
+  sf::st_make_valid() |> #valida geometrias problemáticas
+  dplyr::select(id_creado, UCSuelo, AREA_HA)
 
-head(ucs_rao_sf)
+ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
+#Se verifica visulalmente
+ggplot(data = ucs_rao_sf) +
+  geom_sf(aes(fill = UCSuelo), color = NA) +  
+  theme_void() +                             
+  theme(legend.position = "none") 
 
-## ----carga_poligono------------------------------------------------------------------------------------------
 
-# Define ruta y nombre de capa de geopackage de departamentos
-deptos_ruta <- here::here("Data", "INP_departamentos_IGAC_Abril_2025.gpkg")
-capa_nombre_deptos <- sf::st_layers(deptos_ruta)$name[1]
+## ----transforma_crs------------------------------------------------------------------------------------------
 
-# Carga geopackage de dpartamentos
-departamentos_sf <- sf::st_read(
-  deptos_ruta,
-  layer = capa_nombre_deptos,
-  quiet = TRUE
-  ) |>
-  # Se seleccionan 21 departamentos de la zona Andina, Caribe y Pacífica
-  dplyr::filter(DeNombre %in% c(
-    "Antioquia", 
-    "Atlántico",
-    "Bolívar",
-    "Boyacá",
-    "Caldas",
-    "Cauca",
-    "Cesar",
-    "Chocó", 
-    "Córdoba",
-    "Cundinamarca",
-    "Huila",
-    "La Guajira",
-    "Magdalena",
-    "Nariño",
-    "Norte de Santander",
-    "Quindío",
-    "Risaralda",
-    "Santander", 
-    "Sucre",
-    "Tolima",
-    "Valle del Cauca")
-    ) |>
-  tidyr::drop_na()
-  
+# Transforma a crs 4326 antes de pasarlo a GEE
+ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
 
-# departamento_1_sf pasa de "SHAPE" a "geometry"
-names(departamentos_sf)[names(departamentos_sf) == "SHAPE"] <- "geometry"
-departamentos_sf <- sf::st_as_sf(as.data.frame(departamentos_sf), sf_column_name = "geometry")
+ucs_sf_4326_test <- ucs_sf_4326[1:400,]
 
-# Aseguramos que ambos datasets tengan la misma proyección
-departamentos_sf <- sf::st_transform(departamentos_sf, st_crs(ucs_rao_sf))
 
-# Se unen los polígonos en uno solo
-limite_poly <- sf::st_union(departamentos_sf) 
 
+## ----tansform_ee---------------------------------------------------------------------------------------------
 
+# Convierte a objetos GEE
+ucs_ee_4326     <- rgee::sf_as_ee(ucs_sf_4326_test)
 
-## ------------------------------------------------------------------------------------------------------------
+#Extrae bounding boxdel área de estudio
+ee_4326_bbox <- ucs_ee_4326$bounds()
 
-ucs_ee     <- rgee::sf_as_ee(ucs_rao_sf)
-estudio_ee <- rgee::sf_as_ee(limite_poly)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Carga y suavizado del DEM SRTM 30 m
-dem   <- ee$Image("USGS/SRTMGL1_003")$rename("DEM")$clip(estudio_ee)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Centra el visor en tu área de interés
-Map$setCenter(lon = -74, lat = 4, zoom = 5)
-# 2. Añadir el DEM original (sin suavizar)
-Map$addLayer(
-  dem,
-  visParams = list(min = 0, max = 3000,
-                    palette = viridis::viridis(10)),
-  name = "DEM original"
-)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-slope_deg  <- ee$
-  Terrain$
-  slope(dem)$
-  multiply(180/pi)$
-  rename("slope_deg")
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Centrar el visor en tu área de interés
-Map$setCenter(lon = -74, lat = 4, zoom = 5)
-Map$addLayer(
-  slope_deg,
-  visParams = list(min = 0, max = 60,
-                   palette = viridis::viridis(10)),
-  name = "Pendiente (°)"
-)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Bloque único de setup (solo la primera vez)
-if (!py_module_available("tagee")) {
-  py_install(c("tagee","ee_extra","regex","jsbeautifier"),
-             envname="rgee_py", pip=TRUE)
-}
-tagee <- import("tagee",    convert = FALSE)
-eeextra <- import("ee_extra", convert = FALSE)
-
-
-# Ejecuta el análisis de terreno (devuelve un ee$Image con múltiples bandas)
-dem_attr <- tagee$terrainAnalysis(dem)
-
-dem_attr$bandNames()$getInfo()
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Extrae la banda de Curvatura Vertical
-vc_img <- dem_attr$select("VerticalCurvature")
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-Map$setCenter(lon = -74, lat = 4, zoom = 5)
-Map$addLayer(
-  vc_img,
-  visParams = list(
-    min     = -0.00005,
-    max     = +0.00005,
-    palette = viridis::viridis(5)
-  ),
-  name = "Curvatura vertical (±0.00005)"
-)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Paso A: mediana global (sin clip)
-lst_med <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
-  filterBounds(estudio_ee)$
-  filterDate("2013-01-01","2023-01-01")$
-  map(function(img) img$select("ST_B10")$
-                   multiply(0.00341802)$
-                   add(149))$
-  median()$
-  rename("lst")
-
-# Paso B: clip único de la imagen final
-lst_clipped <- lst_med$clip(estudio_ee)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Visualización con escala explícita para reducir memoria
-Map$setCenter(-74, 4, 5)
-Map$addLayer(
-  lst_clipped,
-  visParams = list(min = 270, max = 320, palette = c("blue","white","red")),
-  name  = "LST mediana (único clip)"
-)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Paso A: mediana global de VH/VV (sin clip)
-vhvv_med <- ee$ImageCollection("COPERNICUS/S1_GRD")$
-  filterBounds(estudio_ee)$
-  filterDate("2015-01-01", "2024-01-01")$
-  filter(ee$Filter$listContains("transmitterReceiverPolarisation", "VV"))$
-  filter(ee$Filter$listContains("transmitterReceiverPolarisation", "VH"))$
-  map(function(img) {
-    img$select("VH")$
-      divide(img$select("VV"))$
-      rename("vhvv")
-  })$
-  median()$
-  rename("vhvv")
-
-# clip único de la imagen final al área de estudio
-vhvv_clipped <- vhvv_med$clip(estudio_ee)
-
-
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Visualización en el visor de rgee
-Map$setCenter(lon = -74, lat = 4, zoom = 5)
-Map$addLayer(
-  vhvv_clipped,
-  visParams = list(min = 0, max = 2, palette = c("brown", "white", "blue")),
-  name = "VH/VV mediana (clip único)"
-)
-
-
-
-## ------------------------------------------------------------------------------------------------------------
-
-# Se vuelve a correr esto, en caso de que alguna de las funciones previas haya cambiado la configuración
-ee_clean_pyenv()
-reticulate::py_run_string("
-import ee
-ee.Authenticate()
-ee.Initialize(project='even-electron-461718-g2')
-")
-
-
-## ------------------------------------------------------------------------------------------------------------
-
+target_crs <- "EPSG:4326"    # Sistema soportado por GEE para exportación universal
+target_scale <- 50           # Resolución de pixel objetivo (50 m)
 export_folder <- "GEE_exports" # Carpeta destino en Google Drive "My Drive"
 
-# ===== Chunk 1: Definir el reductor (rápido) =====
-# Define un reductor combinado: media + desviación estándar (sd)
-# - ee$Reducer$mean()   → media de los píxeles en cada UCS
-# - ee$Reducer$stdDev() → desviación estándar de los mismos píxeles
-# - sharedInputs = TRUE  → sd usa los mismos píxeles que mean
-reducer_cv <- ee$Reducer$mean()$combine(
-  reducer2     = ee$Reducer$stdDev(),
-  sharedInputs = TRUE
+
+
+## ----dem_object----------------------------------------------------------------------------------------------
+
+# Carga y suavizado del DEM SRTM 30 m
+dem_clip   <- ee$Image("USGS/SRTMGL1_003")$rename("DEM")$clip(ee_4326_bbox)
+
+# Visualiza en el visor antes de exportar (verifica recorte)
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
+Map$addLayer(
+  dem_clip,
+  visParams = list(min = 0, max = 3000,
+                   palette = viridis::viridis(10)), 
+  name = "DEM SRTM (nativo 30m)"
+  )
+
+
+
+## ----dem_mean_task-------------------------------------------------------------------------------------------
+
+# Calcula media del DEM por polígono
+dem_mean <- dem_clip$reduceRegions(
+  collection = ucs_ee_4326, #se trata como una FeatureCollection de polígonos
+  reducer    = ee$Reducer$mean(),
+  scale      = target_scale
 )
 
-
-# ===== Chunk 2: Construir reduceRegions (puede atascarse) =====
-# Aplicar reduceRegions para calcular media y sd en las UCS
-#    Ejemplo para pendiente (slope_deg), escala 30 m
-t0 <- Sys.time()
-slope_stats <- slope_deg$reduceRegions(
-  collection = ucs_ee,
-  reducer    = reducer_cv,
-  scale      = 30
-)
-message("Tiempo reduceRegions: ", round(as.numeric(Sys.time() - t0),1), " seg")
-
-# ===== Chunk 3: Mapear CV (rápido) =====
-# Mapear sobre cada elemento para calcular el CV y quedarnos solo con id + slope_cv
-slope_cv_fc <- slope_stats$map(function(feature) {
-  feat     <- ee$Feature(feature)
-  mean_val <- ee$Number(feat$get("mean"))
-  sd_val   <- ee$Number(feat$get("stdDev"))
-  # Añade una nueva propiedad "slope_cv" = sd / mean, y selecciona id + slope_cv
-  feat$
-    set("slope_cv", sd_val$divide(mean_val))$
-    select(c("id", "slope_cv"))
-})
-
-
-# ===== Chunk 4: Crear y arrancar la tarea =====
-# Exportar la tabla de CV a Google Drive para poder monitorear en EE Task Manager
-task <- ee$batch$Export$table$toDrive(
-  collection     = slope_cv_fc,
-  description    = "CV_slope_UCS",
-  folder         = "GEE_exports",
-  fileNamePrefix = "CV_slope_UCS",
+# Exporta resultados a Google Drive
+task_mean <- ee$batch$Export$table$toDrive(
+  collection     = dem_mean,
+  description    = "DEM_mean_by_polygon_400",
+  folder         = export_folder,
+  fileNamePrefix = "DEM_mean_by_polygon_400",
   fileFormat     = "CSV"
 )
-task$start()
+
+# Inicia la tarea
+task_mean$start()
+
+# Chequea estado
+print(task_mean$status())
 
 
+## ----dem_stdev_task------------------------------------------------------------------------------------------
 
-## ------------------------------------------------------------------------------------------------------------
-
-# 4) Construye tu reductor combinado para CV
-reducer_cv <- ee$Reducer$mean()$combine(
-  reducer2     = ee$Reducer$stdDev(),
-  sharedInputs = TRUE
+# Calcular desviación estándar del DEM por polígono
+dem_std <- dem_clip$reduceRegions(
+  collection = ucs_ee_4326,
+  reducer    = ee$Reducer$stdDev(),
+  scale      = target_scale # por ejemplo, 50
 )
 
-# 5) Aplica reduceRegions (esto sí puede tardar, pero no se colgará)
-slope_stats <- slope_deg$reduceRegions(
-  collection = ucs_ee,
-  reducer    = reducer_cv,
-  scale      = 30
-)
-
-# 6) Añade el campo slope_cv
-slope_cv_fc <- slope_stats$map(function(f) {
-  f <- ee$Feature(f)
-  m <- ee$Number(f$get("mean"))
-  s <- ee$Number(f$get("stdDev"))
-  f$set("slope_cv", s$divide(m))$select(c("id", "slope_cv"))
-})
-
-# 7) Exporta la tabla a Google Drive
-task <- ee$batch$Export$table$toDrive(
-  collection     = slope_cv_fc,
-  description    = "CV_slope_UCS",
+# Exportar como tabla CSV
+task_std <- ee$batch$Export$table$toDrive(
+  collection     = dem_std,
+  description    = "DEM_stdDev_by_polygon_400",
   folder         = "GEE_exports",
-  fileNamePrefix = "CV_slope_UCS",
+  fileNamePrefix = "DEM_stdDev_by_polygon_400",
   fileFormat     = "CSV"
 )
-task$start()
 
+# Inicia la tarea
+task_std$start()
 
-## ------------------------------------------------------------------------------------------------------------
-
-
-# ——————————————————————————————————————————————————————————————————————
-# Repite los pasos 2–4 para cada variable:
-#   • Curvatura horizontal: use hc_img, escala = 30
-#   • Curvatura vertical:   use vc_img, escala = 30
-#   • LST median (lst_med): use lst_clipped, escala = 100
-#   • VH/VV median:         use vhvv_clipped, escala = 
+# Chequea estado
+print(task_mean$status())
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----reubicar_googledrive------------------------------------------------------------------------------------
 
-df_glm <- ucs_rao_sf %>%
-  left_join(df_cv_all, by="id") %>%
-  filter(as.logical(st_intersects(geometry, limite_poly))) %>%
-  mutate(hot = if_else(Q >= quantile(Q, 0.95), 1, 0))
+#Falta código
 
-mod <- glm(
-  hot ~ slope_cv + horiz_cv + vert_cv + lst_cv + vhvv_cv,
-  data    = df_glm,
-  family  = binomial(),
-  weights = 1/AREA_HA
+
+
+## ----geojson_a_sf_dem----------------------------------------------------------------------------------------
+
+# Leer archivos CSV exportados desde GEE
+dem_mean_400 <- read.csv(here("Data", "DEM_mean_by_polygon_400.csv"), stringsAsFactors = FALSE)
+dem_stdev_400 <- read.csv(here("Data", "DEM_stdDev_by_polygon_400.csv"), stringsAsFactors = FALSE)
+
+# Unir ambos data frames por varias columnas clave
+dem_cv_400 <- left_join(
+  dem_mean_400,
+  dem_stdev_400,
+  by = c("system.index", "id_creado", "UCSuelo", "AREA_HA", ".geo")
 )
-summary(mod)
-car::vif(mod)
+
+# Convertir geometría desde .geo (GeoJSON como texto) a objeto sf
+dem_cv_400_sf <- st_as_sf(
+  data.frame(dem_cv_400, geometry = geojson_sf(dem_cv_400$.geo)), #convierte a sf
+  crs = 4326) |>
+  select(-.geo) |> #elimina columna de geometria obsoleta
+  mutate(cv = stdDev / mean) #calcula coeficiente de variación
+
+# Visualización rápida
+ggplot(dem_cv_400_sf) +
+  geom_sf(aes(fill = cv)) +
+  scale_fill_viridis_c() +
+  theme_minimal()
+
 
