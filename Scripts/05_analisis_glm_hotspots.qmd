@@ -70,7 +70,7 @@ source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding =
 # Asignación de id único para cada polígono
 ucs_rao_sf <- ucs_rao_sf |> 
   sf::st_make_valid() |> #valida geometrias problemáticas
-  dplyr::select(id_creado, UCSuelo, AREA_HA) 
+  dplyr::select(id_creado, UCSuelo, AREA_HA, Q) 
 
 ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
@@ -376,3 +376,25 @@ slope_cv_sf <- st_as_sf(
 
 
 ```
+
+Se añaden columnas de log
+
+```{r}
+
+# Inicializa vector de estado
+status_vector <- rep(NA_character_, nrow(dem_cv_sf))
+
+# Recorre el log y asigna el estado a cada fila según rango
+for (i in seq_len(nrow(registro_dem))) {
+  fila_inicio <- registro_dem$start_idx[i]
+  fila_fin    <- registro_dem$end_idx[i]
+  status_val  <- registro_dem$status[i]
+
+  status_vector[fila_inicio:fila_fin] <- status_val
+}
+
+# Añadir al objeto sf
+dem_cv_sf$status <- status_vector
+```
+
+## 4. Modelado GLM
