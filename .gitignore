@@ -1,2 +1,5 @@
 # Ignore TIFF files
 *.tif
+
+#Ignore csv
+*csv

@@ -21,7 +21,7 @@ Este cuaderno implementa en un solo flujo la conexión de R con Google Earth Eng
 # knitr::purl('05_analisis_glm_hotspots.qmd')
 
 if (!"pacman" %in% installed.packages()) install.packages("pacman")
-pacman::p_load(here, remotes, sf, geojsonio, geojsonsf, dplyr, ggplot2,
+pacman::p_load(here, remotes, sf, geojsonio, geojsonsf, dplyr, purrr, readr, ggplot2,
                patchwork, wesanderson, qs)
 
 # Selección entorno ya existente antes de cualquier llamado que use Python
@@ -81,7 +81,6 @@ ggplot(data = ucs_rao_sf) +
   theme(legend.position = "none") 
 ```
 
-
 **Armonización**
 
 Se definen parámetros de extensión, CRS y resolución para armonizar los datos de GEE con con los datos de pedodiversidad de UCS. Para la definición del área de recorte se toma un buffer sobre el objeto de sf. Esto amortiguará posteriormente efectos de borde en el cálculo de la diversidad. No se recomienda enviar el objeto completo y hacer el buffer en GEE, dado que el envío de un ubjeto con numerosos multipoligonos (como es el caso) es prohibitivo en GEE. Los envios no pueden superar 10MB por tarea.
@@ -116,7 +115,7 @@ bbox_ee <- ee$Geometry$Rectangle(
 
 ## 2. Derivación de variables raster en GEE
 
-A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original.  
+A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original.
 
 ### 2.1 DEM
 
@@ -139,7 +138,6 @@ Map$addLayer(
 ```
 
 ### 2.2 Pendiente
-
 
 ```{r extraccion_pendiente}
 
@@ -198,10 +196,9 @@ Map$addLayer(
 
 ```
 
-
 ### 2.4 Temperatura superficial
 
-La temperatura superficial se obtiene a partir de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se obitene en unidades de ...  se transforma...
+La temperatura superficial se obtiene a partir de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se obitene en unidades de ... se transforma...
 
 ```{r}
 
@@ -225,10 +222,7 @@ Map$addLayer(
 
 ```
 
-
 ### 2.5 Índice de polarización
-
-
 
 ```{r}
 
@@ -270,67 +264,115 @@ registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, variable_name = "SLOPE", scale = 50)
 
 
-registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 800, max_index = 1500, variable_name = "LST_media", scale = 100)
+registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 1, max_index = 43384, variable_name = "LST_media", scale = 100)
 
-registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 700, max_index = 1300, variable_name = "VHVV_media", scale = 50)
+registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, variable_name = "VHVV_media", scale = 50)
 
 
 ```
 
 **Post procesamiento de .csv**
 
-El código a continuación lee todos los .csv de una propiedad (por ejemplo, "slope"),los combina en un solo data.frame, lo guarda como OUT_slope_combinado.csv (o OUT_<propiedad>_combinado.csv según corresponda), y lo sube automáticamente a tu carpeta de Google Drive, usando el paquete googledrive.
+El código a continuación lee todos los .csv de una propiedad (por ejemplo, "slope"),los combina en un solo data.frame, lo guarda como OUT_slope_combinado.csv (o OUT\_<propiedad>\_combinado.csv según corresponda), y lo sube automáticamente al repositorio del proyecto, usando el paquete googledrive.
 
 ```{r reubicar_googledrive}
 
 combinar_y_subir_csv <- function(propiedad,
-                                 carpeta_local = "GEE_exports",
-                                 drive_folder_id = "1HTtfH3FK_7SR_HyuRRG-1qamQHN7uPbp") {
+                                 carpeta_drive_id_origen = "17yxwhlpgL4EG8inI5u8Nwi08wOrnhJiM",  # GEE_exports
+                                 carpeta_drive_id_destino = "1qJ5S25TZaFWzueNhx1M4Gr3P8JYWKGeU",  # Proyecto
+                                 carpeta_temporal = "tmp_csv") {
 
-  # Encuentra todos los CSV que comienzan con el nombre de la propiedad
-  archivos <- list.files(path = carpeta_local,
-                         pattern = paste0("^", propiedad, "_.*\\.csv$"),
-                         full.names = TRUE)
-
-  # Validación rápida
-  if (length(archivos) == 0) {
-    stop(glue::glue("No se encontraron archivos para la propiedad '{propiedad}' en la carpeta '{carpeta_local}'."))
+  # Crea carpeta temporal local si no existe
+  if (!dir.exists(carpeta_temporal)) {
+    dir.create(carpeta_temporal)
   }
 
-  # Combina todos los CSV en un solo data.frame
-  combinado <- purrr::map_dfr(archivos, readr::read_csv, show_col_types = FALSE)
+  # Listar archivos en Google Drive (solo .csv con prefijo exacto)
+  archivos_drive <- googledrive::drive_ls(
+    path = as_id(carpeta_drive_id_origen),
+    pattern = glue::glue("^{propiedad}_.*\\.csv$")
+  ) |>
+    dplyr::filter(stringr::str_ends(name, ".csv"))
 
-  # Define nombre de archivo combinado
-  archivo_salida <- file.path(carpeta_local, paste0("OUT_", propiedad, "_combinado.csv"))
+  if (nrow(archivos_drive) == 0) {
+    stop(glue::glue("No se encontraron archivos CSV para la propiedad '{propiedad}' en GEE_exports."))
+  }
 
-  # Guarda el archivo combinado localmente
-  readr::write_csv(combinado, archivo_salida)
+  message(glue::glue("📥 Descargando {nrow(archivos_drive)} archivos CSV para '{propiedad}'..."))
 
-  # Sube a Google Drive
-  googledrive::drive_upload(
-    media = archivo_salida,
-    path = as_id(drive_folder_id),
-    name = basename(archivo_salida),
+  # Descargar archivos al directorio temporal
+  purrr::walk2(
+    archivos_drive$name,
+    archivos_drive$id,
+    ~ googledrive::drive_download(
+      file = as_id(.y),
+      path = file.path(carpeta_temporal, .x),
+      overwrite = TRUE
+    )
+  )
+
+  # Leer y combinar
+  archivos_locales <- list.files(path = carpeta_temporal,
+                                 pattern = paste0("^", propiedad, "_.*\\.csv$"),
+                                 full.names = TRUE)
+
+  combinado <- purrr::map_dfr(archivos_locales, readr::read_csv, show_col_types = FALSE)
+
+  # Escribir archivo combinado
+  nombre_salida <- paste0("OUT_", propiedad, "_combinado.csv")
+  ruta_salida <- file.path(carpeta_temporal, nombre_salida)
+  readr::write_csv(combinado, ruta_salida)
+
+  # Subir a carpeta final de proyecto en Drive
+  archivo_subido <- googledrive::drive_upload(
+    media = ruta_salida,
+    path = as_id(carpeta_drive_id_destino),
+    name = nombre_salida,
     overwrite = TRUE
   )
 
-  message(glue::glue("✅ Archivo combinado '{basename(archivo_salida)}' subido a Google Drive."))
+  message(glue::glue("✅ Archivo combinado subido: {archivo_subido$name} (ID: {archivo_subido$id})"))
+
+  # Limpieza automática
+  unlink(carpeta_temporal, recursive = TRUE)
+  message("🧹 Archivos temporales eliminados.")
 }
 
 ```
 
+Aplica la función para las covariables
+
+```{r}
+
+combinar_y_subir_csv("DEM")
+
+combinar_y_subir_csv("SLOPE")
+```
 
 Se convierte geometria de geojson a sf
 
 ```{r}
 
-# Convertir geometría desde .geo (GeoJSON como texto) a objeto sf
+
+# Ruta al CSV combinado
+dem_cv <- read_csv(here::here("Data", "OUT_covars_csv","OUT_DEM_combinado.csv" ))
+
+# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
 dem_cv_sf <- st_as_sf(
   data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)), #convierte a sf
   crs = 4326) |>
   select(-.geo) |> #elimina columna de geometria obsoleta
   mutate(cv = stdDev / mean) #calcula coeficiente de variación
 
+# Ruta al CSV combinado
+slope_cv <- read_csv(here::here("Data", "OUT_covars_csv","OUT_SLOPE_combinado.csv" ))
+
+# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
+slope_cv_sf <- st_as_sf(
+  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), #convierte a sf
+  crs = 4326) |>
+  select(-.geo) |> #elimina columna de geometria obsoleta
+  mutate(cv = stdDev / mean) #calcula coeficiente de variación
+
+
 ```
-
-
