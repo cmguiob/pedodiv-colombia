@@ -28,9 +28,13 @@ pacman::p_load(
   geojsonio,   # GeoJSON ↔ objetos R
   geojsonsf,   # GeoJSON ↔ sf rápido
   dplyr,       # manipulación tabular
+  tidyr,
   purrr,       # funciones map*
+  broom,
   readr,       # leer CSV rápido
+  performance,
   ggplot2,     # gráficos
+  ggpubr,
   patchwork,   # unir gráficos
   wesanderson, # paletas de color
   qs           # guardar objetos rápido
@@ -277,10 +281,23 @@ registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, st
 
 registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_media", scale = 100)
 
-registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "VHVV_media", scale = 50)
+registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "VHVV_media", scale = 50)
 
 
 
+```
+
+Verificación de tasks enviados
+
+```{r}
+
+verificar_tasks_enviados <- function(log_df) { library(dplyr) library(rgee)
+
+# Extraer todas las tareas activas/pendientes/finalizadas tasks <- ee_manage_task_list() |> as.data.frame() |> arrange(description, state, update_time) |> group_by(description) |> slice_tail(n = 1) |> # conserva solo la última tarea por nombre ungroup() |> select(description, state)
+
+# Unir con el log original según descripción log_df_verificado <- log_df |> left_join(tasks, by = c("task_description" = "description")) |> rename(status_real = state)
+
+return(log_df_verificado) }
 ```
 
 **Post procesamiento de .csv**
@@ -410,3 +427,140 @@ dem_cv_sf$status <- status_vector
 ```
 
 ## 4. Modelado GLM
+
+Ya que `dem_cv_sf`, `slope_cv_sf` y `ucs_rao_sf` comparten `id_creado` como identificador único, se hace un `left_join` sucesivo para combinar sus métricas
+
+```{r}
+
+# Extraer solo columnas útiles de dem y slope
+dem_df <- dem_cv_sf |> 
+  st_drop_geometry() |> 
+  select(id_creado, dem_cv = cv)
+
+slope_df <- slope_cv_sf |> 
+  st_drop_geometry() |> 
+  select(id_creado, slope_cv = cv)
+
+# Unir a la tabla base
+modelo_df <- ucs_rao_sf |>
+  mutate(
+    Q = if_else(Q == 0, 1e-3, Q),               # evitar log(0)
+    Qdens = Q / AREA_HA,                        # diversidad por unidad de área
+    log_Qdens = log(Qdens),                     # log-transformación
+    log_Qdens01 = (log_Qdens - min(log_Qdens)) / 
+                  (max(log_Qdens) - min(log_Qdens)) # escalado entre 0–1
+  ) |>
+  left_join(
+    dem_cv_sf |> st_drop_geometry() |> select(id_creado, dem_cv = cv),
+    by = "id_creado"
+  ) |>
+  left_join(
+    slope_cv_sf |> st_drop_geometry() |> select(id_creado, slope_cv = cv),
+    by = "id_creado"
+  ) 
+
+```
+
+Separo los datos con y sin NA, para inspección y para correr modelo
+
+```{r}
+
+# Subconjunto sin NA: usado para modelado
+modelo_df_completo <- modelo_df |> drop_na(log_Qdens, dem_cv, slope_cv)
+
+# Subconjunto con al menos un NA
+modelo_df_NA <- modelo_df |> filter(
+  is.na(log_Qdens) | is.na(dem_cv) | is.na(slope_cv)
+)
+```
+
+Se establecen los percentiles y clasifican los extremos:
+
+```{r}
+
+umbral95 <- quantile(modelo_df_completo$log_Qdens, 0.95, na.rm = TRUE)
+
+# 1. Agregar variable binaria a modelo_df_completo
+modelo_df_completo <- modelo_df_completo |>
+  mutate(
+    log_Qdens_hot95 = as.integer(log_Qdens >= umbral95)
+  )
+
+```
+
+Se explora la distribucion de las covariables
+
+```{r}
+
+summary(modelo_df_completo$dem_cv)
+hist(modelo_df_completo$dem_cv, breaks = 100)
+```
+
+Se corre un modelo GLM binomial para explicar los hotspots
+
+```{r}
+
+# 2. Ajustar modelo directamente sobre modelo_df_completo
+glm_hot <- glm(log_Qdens_hot95 ~ dem_cv + slope_cv,
+               data = modelo_df_completo,
+               family = binomial())
+
+# 3. Calcular predicciones y residuos en la misma tabla
+modelo_df_completo <- modelo_df_completo |>
+  mutate(
+    prob_hot95 = predict(glm_hot, newdata = modelo_df_completo, type = "response"),
+    resid_hot95 = residuals(glm_hot, type = "response")
+  )
+
+#Resumen estadístico
+summary(glm_hot)
+performance::r2_tjur(glm_hot)
+
+
+```
+
+### 4.1 Visualización de resultados
+
+Líneas de regresión con intervalos, puntos y R²
+
+```{r}
+
+
+# Curva de respuesta usando predicción sobre una grilla
+newdata_dem <- data.frame(
+  dem_cv = seq(min(modelo_df_completo$dem_cv), max(modelo_df_completo$dem_cv), length.out = 200),
+  slope_cv = mean(modelo_df_completo$slope_cv, na.rm = TRUE)
+)
+
+newdata_dem$prob <- predict(glm_hot, newdata = newdata_dem, type = "response")
+
+ggplot(modelo_df_completo, aes(x = dem_cv, y = log_Qdens_hot95)) +
+  geom_jitter(height = 0.05, alpha = 0.3) +
+  geom_line(data = newdata_dem, aes(x = dem_cv, y = prob), color = "blue", size = 1) +
+  labs(
+    title = "Curva ajustada: prob(hotspot) ~ dem_cv",
+    x = "DEM CV",
+    y = "Hotspot observado (0/1) y predicho"
+  )
+
+```
+
+Mapas de predicción y residuo
+
+```{r}
+
+# Mapa de predicción (probabilidad de ser hotspot)
+map_pred_hot <- ggplot(modelo_df) +
+  geom_sf(aes(fill = prob_hot95), color = NA) +
+  scale_fill_viridis_c(option = "B") +
+  labs(title = "Predicción: Probabilidad de Hotspot (≥95%)")
+
+# Mapa de residuo del modelo binomial
+map_resid_hot <- ggplot(modelo_df) +
+  geom_sf(aes(fill = resid_hot95), color = NA) +
+  scale_fill_gradient2() +
+  labs(title = "Residuo modelo binomial")
+
+# Mostrar juntos
+map_pred_hot + map_resid_hot
+```
