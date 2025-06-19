@@ -22,13 +22,15 @@
 
 procesamiento_lotes_imagen <- function(sf_data,
                                        image,
+                                       batch_s = 400,
+                                       reduce_batch_by = 4,
                                        variable_name,
                                        scale,
                                        export_folder = "GEE_exports",
                                        simplify_tolerance = 0.001,
                                        start_idx = 1,
                                        max_index = nrow(sf_data),
-                                       pause_on_fail = 60) {
+                                       pause_on_fail = 20) {
   
   log_list <- list()
   
@@ -39,7 +41,7 @@ procesamiento_lotes_imagen <- function(sf_data,
   )
   
   current_idx <- start_idx
-  batch_size <- 300  # Tamaño máximo permitido
+  batch_size <- batch_s  # Tamaño máximo permitido
   retry_batch_size <- batch_size  # Se ajusta dinámicamente según éxito/fallo
   
   while (current_idx <= max_index) {
@@ -72,7 +74,7 @@ procesamiento_lotes_imagen <- function(sf_data,
         return(NULL)
       })
       if (is.null(ucs_ee)) {
-        retry_batch_size <<- floor(retry_batch_size / 2)
+        retry_batch_size <<- floor(retry_batch_size / reduce_batch_by)
         next
       }
       
@@ -88,7 +90,7 @@ procesamiento_lotes_imagen <- function(sf_data,
         return(NULL)
       })
       if (is.null(result)) {
-        retry_batch_size <<- floor(retry_batch_size / 2)
+        retry_batch_size <<- floor(retry_batch_size / reduce_batch_by)
         next
       }
       
@@ -107,7 +109,7 @@ procesamiento_lotes_imagen <- function(sf_data,
         return(NULL)
       })
       if (is.null(task)) {
-        retry_batch_size <<- floor(retry_batch_size / 2)
+        retry_batch_size <<- floor(retry_batch_size / reduce_batch_by)
         next
       }
       
@@ -137,7 +139,7 @@ procesamiento_lotes_imagen <- function(sf_data,
       }, error = function(e) {
         message(sprintf("❌ task$start() falló para batch %d–%d. Reduciendo tamaño...", current_idx, end_idx))
         Sys.sleep(pause_on_fail)
-        retry_batch_size <<- floor(retry_batch_size / 2)
+        retry_batch_size <<- floor(retry_batch_size / reduce_batch_by)
       })
     }
     
