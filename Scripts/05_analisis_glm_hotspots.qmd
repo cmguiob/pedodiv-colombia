@@ -263,7 +263,6 @@ registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_
 
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, variable_name = "SLOPE", scale = 50)
 
-
 registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 1, max_index = 43384, variable_name = "LST_media", scale = 100)
 
 registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, variable_name = "VHVV_media", scale = 50)

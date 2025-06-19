@@ -1,22 +1,24 @@
-#' @title Procesamiento por lotes de polígonos en Google Earth Engine
+#' procesamiento_lotes_imagen
 #'
-#' @description
-#' Extrae estadísticas zonales (media y desviación estándar) sobre una imagen de GEE,
-#' dividiendo un conjunto de polígonos (`sf`) en lotes para respetar el límite de payload (~10MB).
-#' Exporta los resultados como archivos CSV a Google Drive.
+#' Esta función divide un conjunto de polígonos (objeto `sf`) en lotes que se procesan
+#' secuencialmente en Google Earth Engine (GEE), extrayendo estadísticas zonales
+#' (media y desviación estándar) a partir de una imagen `ee$Image`.
 #'
-#' @param sf_data Objeto `sf` con geometría tipo POLYGON/MULTIPOLYGON. Debe incluir `id_creado`, `UCSuelo` y `AREA_HA`.
-#' @param image Objeto `ee$Image` con una sola banda ya seleccionada y renombrada.
-#' @param variable_name Nombre base para los archivos exportados (ej: "slope", "lst").
-#' @param scale Resolución espacial (en metros) para la reducción zonal (ej: 30, 50).
-#' @param export_folder Carpeta en Google Drive para guardar los CSV. Default: "GEE_exports".
-#' @param simplify_tolerance Tolerancia para simplificar geometrías (en grados). Default: 0.001 (~100 m).
-#' @param max_payload_mb Tamaño máximo del lote (en MB). Default: 9.9 (límite práctico de GEE).
-#' @param start_idx Índice inicial de procesamiento. Útil para reanudar. Default: 1.
-#' @param max_index Índice máximo de procesamiento. Default: `nrow(sf_data)`.
-#' @param pause_on_fail Tiempo de espera (en segundos) tras un fallo. Default: 60.
+#' Utiliza una lógica adaptativa para reducir el tamaño del lote si GEE rechaza el envío
+#' (ej., por exceder el límite de payload o geometría), y luego lo vuelve a expandir 
+#' gradualmente (×1.5) si los lotes pequeños se envían con éxito.
 #'
-#' @return `data.frame` con el log del procesamiento: índices, tamaño, estado, nombre de tarea, timestamp, banda procesada.
+#' @param sf_data Objeto `sf` con geometría POLYGON/MULTIPOLYGON. Debe tener columna `id_creado`.
+#' @param image Objeto `ee$Image` con una sola banda seleccionada.
+#' @param variable_name Nombre base para exportar (se usará en las tareas).
+#' @param scale Resolución (en metros) para el análisis espacial.
+#' @param export_folder Nombre de la carpeta en Google Drive para guardar los CSV.
+#' @param simplify_tolerance Valor (en grados) para simplificar geometría. Default: 0.001 (~100m).
+#' @param start_idx Índice inicial del conjunto de polígonos (por si se desea reanudar). Default: 1.
+#' @param max_index Último índice a procesar. Default: nrow(sf_data).
+#' @param pause_on_fail Tiempo de espera (segundos) tras un fallo antes de reintentar. Default: 60.
+#'
+#' @return Un data.frame con el log de procesamiento (rango de índices, tamaño del batch, estado, etc.)
 
 procesamiento_lotes_imagen <- function(sf_data,
                                        image,
@@ -24,117 +26,140 @@ procesamiento_lotes_imagen <- function(sf_data,
                                        scale,
                                        export_folder = "GEE_exports",
                                        simplify_tolerance = 0.001,
-                                       max_payload_mb = 9.9,
                                        start_idx = 1,
                                        max_index = nrow(sf_data),
                                        pause_on_fail = 60) {
   
   log_list <- list()
   
+  # Combina media y desviación estándar
   reducer <- ee$Reducer$mean()$combine(
     reducer2 = ee$Reducer$stdDev(),
     sharedInputs = TRUE
   )
   
   current_idx <- start_idx
+  batch_size <- 300  # Tamaño máximo permitido
+  retry_batch_size <- batch_size  # Se ajusta dinámicamente según éxito/fallo
   
   while (current_idx <= max_index) {
-    batch_size <- 300
-    retry_batch_size <- batch_size
     start_success <- FALSE
     
     while (!start_success && retry_batch_size >= 1) {
+      # Se reconstruye el lote completo en cada intento
       end_idx <- min(current_idx + retry_batch_size - 1, nrow(sf_data), max_index)
       batch_range <- current_idx:end_idx
+      
+      message("────────────────────────────")
+      message(sprintf("🔄 Intentando batch %d–%d con retry_batch_size = %d", current_idx, end_idx, retry_batch_size))
       
       batch_sf <- sf_data[batch_range, ]
       batch_sf_simple <- st_simplify(batch_sf, dTolerance = simplify_tolerance)
       
-      geojson_text <- sf_geojson(batch_sf_simple, simplify = FALSE)
-      size_mb <- nchar(geojson_text, type = "bytes") / (1024^2)
+      # Define el rectángulo para hacer clip en la imagen
+      bb <- st_bbox(batch_sf_simple)
+      ee_bbox <- ee$Geometry$Rectangle(
+        coords = list(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]),
+        geodesic = FALSE
+      )
+      image_clip <- image$clip(ee_bbox)
       
-      if (size_mb <= max_payload_mb) {
-        bb <- st_bbox(batch_sf_simple)
-        ee_bbox <- ee$Geometry$Rectangle(
-          coords = list(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]),
-          geodesic = FALSE
-        )
-        image_clip <- image$clip(ee_bbox)
-        ucs_ee <- sf_as_ee(batch_sf_simple)
-        result <- image_clip$reduceRegions(
+      # Convierte a ee$FeatureCollection
+      ucs_ee <- tryCatch({
+        sf_as_ee(batch_sf_simple)
+      }, error = function(e) {
+        message("❌ Error en sf_as_ee. Reduciendo tamaño.")
+        return(NULL)
+      })
+      if (is.null(ucs_ee)) {
+        retry_batch_size <<- floor(retry_batch_size / 2)
+        next
+      }
+      
+      # Reduce regiones sobre la imagen
+      result <- tryCatch({
+        image_clip$reduceRegions(
           collection = ucs_ee,
           reducer = reducer,
           scale = scale
         )
-        desc <- paste0(variable_name, "_", current_idx, "_", end_idx)
-        task <- ee$batch$Export$table$toDrive(
+      }, error = function(e) {
+        message("❌ Error en reduceRegions. Reduciendo tamaño.")
+        return(NULL)
+      })
+      if (is.null(result)) {
+        retry_batch_size <<- floor(retry_batch_size / 2)
+        next
+      }
+      
+      # Define nombre de la tarea y archivo
+      desc <- paste0(variable_name, "_", current_idx, "_", end_idx)
+      task <- tryCatch({
+        ee$batch$Export$table$toDrive(
           collection = result,
           description = desc,
           folder = export_folder,
           fileNamePrefix = desc,
           fileFormat = "CSV"
         )
-        
-        tryCatch({
-          # Intenta iniciar la tarea de exportación a Google Drive
-          task$start()
-          
-          # Si tiene éxito, marca el batch como exitoso
-          start_success <- TRUE
-          message(sprintf("✅ Enviando batch: %d–%d (%.2f MB)", current_idx, end_idx, size_mb))
-          
-          # Guarda información del batch en el log
-          log_list[[length(log_list) + 1]] <- data.frame(
-            start_idx = current_idx,
-            end_idx = end_idx,
-            payload_mb = round(size_mb, 2),
-            simplify_tolerance = simplify_tolerance,
-            status = "Enviado",
-            task_description = desc,
-            timestamp = Sys.time(),
-            image_name = image$bandNames()$getInfo()[[1]]
-          )
-          
-          # Avanza al siguiente índice después de un envío exitoso
-          current_idx <- end_idx + 1
-        }, error = function(e) {
-          # Si ocurre un error al iniciar el task, se captura aquí
-          
-          message(sprintf("❌ Error inesperado al enviar batch: %d–%d (%.2f MB). Intentando con menos polígonos...", current_idx, end_idx, size_mb))
-          
-          # Pausa antes de volver a intentar, para no saturar GEE
-          Sys.sleep(pause_on_fail)
-          
-          # Reduce el tamaño del batch a la mitad para reintentar con un grupo más pequeño
-          retry_batch_size <- floor(retry_batch_size / 2)
-          
-          # NOTA: no se usa 'break', lo que permite seguir en el bucle con batch más chico
-        })
-        
-        
-      } else {
-        retry_batch_size <- floor(retry_batch_size / 2)
-        if (retry_batch_size < 1) break
+      }, error = function(e) {
+        message("❌ Error creando task. Reduciendo tamaño.")
+        return(NULL)
+      })
+      if (is.null(task)) {
+        retry_batch_size <<- floor(retry_batch_size / 2)
+        next
       }
+      
+      # Intenta enviar el lote
+      tryCatch({
+        task$start()
+        start_success <- TRUE
+        message(sprintf("✅ Enviado: %d–%d con %d polígonos", current_idx, end_idx, retry_batch_size))
+        
+        # Registra en el log
+        log_list[[length(log_list) + 1]] <- data.frame(
+          start_idx = current_idx,
+          end_idx = end_idx,
+          retry_batch_size = retry_batch_size,
+          simplify_tolerance = simplify_tolerance,
+          status = "Enviado",
+          task_description = desc,
+          timestamp = Sys.time(),
+          image_name = image$bandNames()$getInfo()[[1]]
+        )
+        
+        current_idx <- end_idx + 1
+        
+        # ✅ Aumenta tamaño usando crecimiento progresivo x1.5, incluso si era 1
+        retry_batch_size <- if (retry_batch_size == 1) 2 else min(floor(retry_batch_size * 1.5), batch_size)
+        
+      }, error = function(e) {
+        message(sprintf("❌ task$start() falló para batch %d–%d. Reduciendo tamaño...", current_idx, end_idx))
+        Sys.sleep(pause_on_fail)
+        retry_batch_size <<- floor(retry_batch_size / 2)
+      })
     }
     
     if (!start_success) {
-      message(sprintf("❌ Batch desde %d supera límite %.1fMB incluso con 1 polígono. Saltando.", current_idx, max_payload_mb))
+      message(sprintf("❌ Lote %d–%d falló incluso con 1 polígono. Se registra como fallido.", current_idx, current_idx))
       log_list[[length(log_list) + 1]] <- data.frame(
         start_idx = current_idx,
         end_idx = end_idx,
-        payload_mb = round(size_mb, 2),
+        retry_batch_size = retry_batch_size,
         simplify_tolerance = simplify_tolerance,
         status = "Falló",
         task_description = NA,
         timestamp = Sys.time(),
         image_name = image$bandNames()$getInfo()[[1]]
       )
-      Sys.sleep(pause_on_fail)
+      
       current_idx <- end_idx + 1
+      retry_batch_size <- batch_size  # Reinicia después de fallo irrecuperable
     }
   }
   
   log_df <- do.call(rbind, log_list)
   return(log_df)
 }
+
