@@ -220,27 +220,63 @@ Map$addLayer(
 
 ### 2.4 Temperatura superficial
 
-La temperatura superficial se obtiene a partir de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se obitene en unidades de ... se transforma...
+La temperatura superficial se obtiene a partir de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se obitene en unidades de ... se transforma...\
+\
+**Coeficiente de variación temporal de LST** (por píxel, °C)
+
+Este bloque calcula el CV temporal por pixel para toda la colección. Se transforma a °C antes de calcular CV
 
 ```{r}
-
-# Temperatura superficial (LST)
-lst_media <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
+lst_collection_temporal <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
   filterBounds(bbox_ee)$
   filterDate("2013-01-01", "2023-01-01")$
   map(function(img) {
-    img$select("ST_B10")$multiply(0.00341802)$add(149)
+    img$select("ST_B10")$
+      multiply(0.00341802)$
+      add(149.0)$
+      subtract(273.15)$
+      rename("lst_celsius")
+  })
+
+# Calcula imagen de CV temporal: stdDev / mean
+lst_mean  <- lst_collection_temporal$mean()$rename("lst_celsius_mean")
+lst_std   <- lst_collection_temporal$reduce(ee$Reducer$stdDev())$rename("lst_celsius_sd")
+lst_cv_temporal <- lst_std$divide(lst_mean)$rename("lst_cv_temporal")
+
+# Visualización del CV temporal
+Map$addLayer(
+  lst_cv_temporal,
+  visParams = list(min = 0, max = 0.3, palette = c("blue", "orange", "red")),
+  name = "CV temporal de LST (°C)"
+)
+```
+
+**Coeficiente de variación espacial de LST**
+
+Este bloque genera una imagen mediana (promedio espacial) de LST para todo el periodo, con conversión a grados Celsius y visualización
+
+```{r}
+lst_img_mediana <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
+  filterBounds(bbox_ee)$
+  filterDate("2013-01-01", "2023-01-01")$
+  map(function(img) {
+    # Aplica escala y offset, y convierte a Celsius
+    img$select("ST_B10")$
+      multiply(0.00341802)$
+      add(149.0)$
+      subtract(273.15)$
+      rename("lst_celsius")
   })$
   median()$
-  rename("lst")
+  rename("lst_celsius")
 
-# Visualización
-Map$setCenter(-74, 4, 5)
+# Visualización en el visor de Earth Engine
 Map$addLayer(
-  lst_media,
-  visParams = list(min = 270, max = 320, palette = c("blue","white","red")),
-  name  = "LST mediana"
+  lst_img_mediana,
+  visParams = list(min = 10, max = 45, palette = c("blue", "white", "red")),
+  name = "LST mediana (espacial, °C)"
 )
+
 
 ```
 
@@ -285,7 +321,9 @@ registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_
 
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 531, max_index = 800, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_media", scale = 50)
+registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
+
+registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_cv_temporal, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
 
 registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "VHVV_media", scale = 50)
 
