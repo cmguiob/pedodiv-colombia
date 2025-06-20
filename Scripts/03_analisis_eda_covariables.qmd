@@ -321,7 +321,7 @@ registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_
 
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
+registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 1, max_index = 600, batch_s = 100, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
 
 registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_cv_temporal, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
 
