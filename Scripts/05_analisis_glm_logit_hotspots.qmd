@@ -1,276 +1,442 @@
 ---
-title: "Análisis de regresión con modelos lineales generalziados (GLM)"
+title: "Análisis de regresión logit de hotspots"
 author: "Carlos M. Guío Blanco"
 format: html
 editor: visual
 ---
 
-En este cuaderno se presenta el análisis mediante la metodología de modelos lineares generalizados, para la función logística. El modelo importa archivos csv que contienen los datos procesados de imágenes satelitales Landsat, Sentinel y SRTM para explicar la ocurrencia de “hotspots” de pedodiversidad.
+En este cuaderno se presenta el análisis mediante la metodología de modelos lineares generalizados, para la función logística. El modelo importa archivos csv que contienen los datos procesados de imágenes satelitales Landsat 8 y SRTM para explicar la ocurrencia de “hotspots” de pedodiversidad.
 
 Las covariables se eligieron partiendo de la hipótesis, que la diversidad de suelos está condicionada por la diversidad de otras variables formadoras cuyos proxis de largo plazo pueden derivarse de imágenes satelitales: geomorfología, clima, hidrología. La vegetación, debido a su alta variabilidad temporal, no se utiliza como proxi para explicar la diversidad de suelos, que se entiende como un proceso que puede durar cientos a millones de años.
 
 ```{r configuracion}
 #Para exportar como .R plano
-# knitr::purl('05_analisis_glm_hotspots.qmd')
+# knitr::purl('05_analisis_glm_logit_hotspots.qmd')
 
 if (!"pacman" %in% installed.packages()) install.packages("pacman")
 pacman::p_load(
-  here,        # rutas del proyecto
-  remotes,     # instalar desde GitHub
-  sf,          # vectores espaciales
-  dplyr,       # manipulación tabular
-  tidyr,
-  readr,       # leer CSV rápido
-  performance,
-  ggdist,
-  scales,      #transformaciones y escalas gráficas
-  ggplot2,     # gráficos
-  paletteer,   #paletas de colores
-  googledrive, #importar y exportar a Google Drive
-  patchwork,   # unir gráficos
-  qs           # guardar objetos rápido
+  here,         # manejo de rutas relativas al proyecto
+  remotes,      # instalar paquetes desde GitHub
+  sf,           # manejo de objetos espaciales vectoriales
+  dplyr,        # manipulación de data frames (verbos como filter, mutate, join)
+  tidyr,        # transformación de datos (pivot_longer, pivot_wider, etc.)
+  readr,        # lectura rápida de archivos CSV
+  performance,  # métricas de modelos (R2 de Tjur, VIF, etc.)
+  ggdist,       # distribución visual de predicciones (stat_halfeye, intervalos)
+  scales,       # transformación de escalas (log10, percentiles, breaks)
+  ggplot2,      # sistema de gráficos base
+  sjPlot,       # visualización de modelos y efectos marginales
+  paletteer,    # acceso a múltiples paletas de colores (ej. viridis, wesanderson)
+  googledrive,  # autenticación y manipulación de archivos en Google Drive
+  patchwork,    # combinación de gráficos ggplot (p1 + p2)
+  qs            # guardado y carga rápida de objetos R
 )
 
-# Ajusta tamaño de letra para todo e lscript
+# Ajusta tamaño base de letra para todos los gráficos
 theme(base_size = 14)
 
 # === Autenticación Google Drive ===
-#googledrive::drive_auth()
+# googledrive::drive_auth()
+
 ```
 
 ## 1. Carga de datos
 
-La pedodiversidad "Q de Rao" es la variable dependiente a predecir, para cada polígono de UCS.
+Carga los datos base de unidades cartográficas de suelos (UCS) y selecciona columnas claves
 
 ```{r carga_pedodiversidad}
 
-# Corre script externo para cargar
+# Carga UCS ya procesadas y armonizadas (ver script externo)
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
-# Asignación de id único para cada polígono
+# Asegura geometrías válidas y selecciona columnas clave
 ucs_rao_sf <- ucs_rao_sf |> 
-  sf::st_make_valid() |> #valida geometrias problemáticas
-  dplyr::select(id_creado, UCSuelo, AREA_HA, Q) 
+  st_make_valid() |> 
+  select(id_creado, UCSuelo, AREA_HA, Q)
 
+# Elimina geometrías vacías (requerido para procesar con sf_as_ee)
 ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
-
-# Transforma a crs 4326 antes de pasarlo a GEE
+# Transforma a WGS84 (EPSG:4326), requerido por GEE
 ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
 
 ```
 
-Se cargan las covariables y se convierte geometria de GeoJSON a sf
+En este bloque se leen los archivos `.csv` generados por GEE, se convierten a objetos `sf`, se calculan métricas derivadas (como el coeficiente de variación y su densidad por área), y se renombran las columnas para mantener consistencia.
 
-```{r}
+```{r carga_covariables}
+
+# === DEM (elevación media y variabilidad espacial) ===
 
 # Ruta al CSV combinado
 dem_cv <- read_csv(here::here("Data", "OUT_covars_csv","OUT_DEM_combinado.csv" ))
 
-# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
-dem_cv_sf <- st_as_sf(
-  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)), #convierte a sf
-  crs = 4326) |>
-  select(-.geo) |> #elimina columna de geometria obsoleta
-  mutate(
-      dem_cv = stdDev / mean, #calcula coeficiente de variación
-      log_dem_cv = log(dem_cv + 1), #calcula log de coeficiente de variación
-      dem_cv_dens = dem_cv/AREA_HA, #calcula la densidad del coeficiente de variación
-      log_dem_cv_dens = log(dem_cv_dens + 1) 
+# Convierte columna .geo (GeoJSON) a geometría válida y calcula métricas
+covars_dem  <- st_as_sf(
+  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)),
+  crs = 4326
   ) |>
-rename(dem_mean = mean, dem_stdDev = stdDev)
-
-
-# Ruta al CSV combinado
-slope_cv <- read_csv(here::here("Data", "OUT_covars_csv","OUT_SLOPE_combinado.csv" ))
-
-# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
-slope_cv_sf <- st_as_sf(
-  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), #convierte a sf
-  crs = 4326) |>
-  select(-.geo) |> #elimina columna de geometria obsoleta
-  mutate(mean = mean / (180 / pi), #correccion temporal, mientras se descarga lote
-         stdDev = stdDev / (180 / pi)) |>
+  select(-.geo) |>
   mutate(
-      slope_cv = stdDev / mean, #calcula coeficiente de variación
-      log_slope_cv = log(slope_cv + 1), #calcula log de coeficiente de variación
-      slope_cv_dens = slope_cv/AREA_HA, #calcula la densidad del coeficiente de variación
-      log_slope_cv_dens = log(slope_cv_dens + 1) 
+    dem_cv = stdDev / mean,                   # coeficiente de variación
+    log_dem_cv = log(dem_cv + 1),             # log-transformación
+    dem_cv_dens = dem_cv / AREA_HA,           # CV densificado por área
+    log_dem_cv_dens = log(dem_cv_dens + 1),    # log densificado
+    # Estandarizadas
+    dem_cv_z = scale(dem_cv)[, 1],
+    log_dem_cv_z = scale(log_dem_cv)[, 1],
+    dem_cv_dens_z = scale(dem_cv_dens)[, 1],
+    log_dem_cv_dens_z = scale(log_dem_cv_dens)[, 1],
+    dem_mean_z = scale(mean)[, 1]
+    ) |>
+  rename(dem_mean = mean, dem_stdDev = stdDev)
+
+
+# === SLOPE (pendiente media y su variabilidad espacial) ===
+
+slope_cv <- read_csv(here::here("Data", "OUT_covars_csv", "OUT_SLOPE_combinado.csv"))
+
+covars_slope <- st_as_sf(
+  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)),
+  crs = 4326
   ) |>
-rename(slope_mean = mean, slope_stdDev = stdDev)
+  select(-.geo) |>
+  mutate(
+    #mean = mean / (180 / pi),  # convierte grados a radianes
+    #stdDev = stdDev / (180 / pi),
+    slope_cv = stdDev / mean,
+    log_slope_cv = log(slope_cv + 1),
+    slope_cv_dens = slope_cv / AREA_HA,
+    log_slope_cv_dens = log(slope_cv_dens + 1),
+    # Estandarizadas
+    slope_cv_z = scale(slope_cv)[, 1],
+    log_slope_cv_z = scale(log_slope_cv)[, 1],
+    slope_cv_dens_z = scale(slope_cv_dens)[, 1],
+    log_slope_cv_dens_z = scale(log_slope_cv_dens)[, 1],
+    slope_mean_z = scale(mean)[, 1]
+    ) |>
+  rename(slope_mean = mean, slope_stdDev = stdDev)
 
 
+# === LST temporal (media de CV temporal por píxel, luego agregada por polígono) ===
+
+lst_cv_temp <- read_csv(here::here("Data", "OUT_covars_csv","OUT_LST_cv_temporal_combinado.csv" ))
+
+lst_cv_temp <- read_csv(here::here("Data", "OUT_covars_csv", "OUT_LST_cv_temporal_combinado.csv"))
+
+covars_lst_cv_temp <- st_as_sf(
+  data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)),
+  crs = 4326
+) |>
+  select(-.geo) |>
+  mutate(
+    log_lst_cv_temp = log(mean + 1), #acá mean es el promedio de las cv de la serie de tiempo para un polígono
+    lst_cv_temp_dens = mean / AREA_HA,
+    log_lst_cv_temp_dens = log(lst_cv_temp_dens + 1),
+    # Estandarizadas
+    lst_cv_temp_z = scale(mean)[, 1],
+    log_lst_cv_temp_z = scale(log_lst_cv_temp)[, 1],
+    lst_cv_temp_dens_z = scale(lst_cv_temp_dens)[, 1],
+    log_lst_cv_temp_dens_z = scale(log_lst_cv_temp_dens)[, 1]
+  ) |>
+  rename(
+    lst_cv_temp = mean,
+    lst_cv_temp_sd = stdDev
+  )
 ```
 
 ## 2. Post procesamiento
 
-Se unen las covariables
+Este bloque construye la tabla base `modelo_df` **uniendo la pedodiversidad observada con las covariables** derivadas de DEM, SLOPE y LST (coeficiente de variación temporal). Se incluyen métricas transformadas y estandarizadas, útiles para el modelado posterior.
 
 ```{r join_covars}
 
-# Extraer solo columnas útiles de dem y slope
-dem_df <- dem_cv_sf |> 
-  st_drop_geometry() |>
-  select(-system.index)
+# Elimina geometría para unir como tabla
+dem_df <- covars_dem |> st_drop_geometry()
+slope_df <- covars_slope |> st_drop_geometry()
+lst_cv_temp_df <- covars_lst_cv_temp |> st_drop_geometry()
 
-slope_df <- slope_cv_sf |> 
-  st_drop_geometry() |>
-  select(-system.index)
-
-# Unir a la tabla base
+# Une por id_creado, AREA_HA y UCSuelo
 modelo_df <- ucs_rao_sf |>
   mutate(
-    #Q = if_else(Q == 0, 1e-3, Q),               # evitar log(0)
-    Qdens = Q / AREA_HA,                        # diversidad por unidad de área
-    log_Qdens = log(Qdens + 1),                     # log-transformación
+    Q = if_else(Q == 0, 1e-3, Q),              # Evita log(0)
+    Qdens = Q / AREA_HA,                       # Densidad de diversidad
+    log_Qdens = log(Qdens + 1),                # Transformación log
+    log_Qdens01 = (log_Qdens - min(log_Qdens)) / 
+                  (max(log_Qdens) - min(log_Qdens)) # Escalado entre 0–1
   ) |>
-  left_join(
-    dem_df,
-    by = c("id_creado", "AREA_HA", "UCSuelo")
-  ) |>
-  left_join(
-    slope_df,
-    by = c("id_creado", "AREA_HA", "UCSuelo")
-  ) 
+  left_join(dem_df,          by = c("id_creado", "AREA_HA", "UCSuelo")) |>
+  left_join(slope_df,        by = c("id_creado", "AREA_HA", "UCSuelo")) |>
+  left_join(lst_cv_temp_df,  by = c("id_creado", "AREA_HA", "UCSuelo"))
 
-
+# Verifica que la unión fue exitosa
+glimpse(modelo_df)
 ```
 
-Separo los datos con y sin NA, para inspección y para correr modelo
+Este bloque depura el conjunto de datos para el ajuste de modelos logit que predicen hotspots de pedodiversidad. Se eliminan observaciones con valores faltantes en covariables clave, se construye la variable binaria `log_Qdens_hot95` (indicador de hotspot), y se conserva únicamente el subconjunto completo de datos para modelado.
 
-```{r}
+```{r preparacion_modelado_logit}
 
-# Subconjunto sin NA: usado para modelado
-modelo_df_completo <- modelo_df |> 
-drop_na(log_Qdens, dem_cv, slope_cv, dem_mean, slope_mean, log_dem_cv, log_slope_cv, dem_cv_dens, slope_cv_dens)
-
-# Subconjunto con al menos un NA
-modelo_df_NA <- modelo_df |> 
-  filter(if_any(c(
-    log_Qdens, dem_cv, slope_cv, dem_mean, slope_mean, log_dem_cv, log_slope_cv, dem_cv_dens, slope_cv_dens), is.na))
-```
-
-Se establecen los percentiles y clasifican los extremos:
-
-```{r}
-
-umbral95 <- quantile(modelo_df_completo$log_Qdens, 0.95, na.rm = TRUE)
+# Filtra UCS con covariables completas (sin NA en las variables seleccionadas)
+modelo_df_completo <- modelo_df |>
+  drop_na(
+    log_Qdens,                                # Diversidad logarítmica densificada
+    dem_mean, slope_mean,                     # Elevación y pendiente media
+    dem_cv_dens, log_dem_cv_dens,             # Densidad y log de CV de elevación
+    slope_cv_dens, log_slope_cv_dens,         # Densidad y log de CV de pendiente
+    lst_cv_temp, log_lst_cv_temp,             # CV temporal de LST y su log
+    lst_cv_temp_dens, log_lst_cv_temp_dens    # Densidad y log de CV temporal de LST
+  )
 
 
+# Calcula el percentil 95 de diversidad (logarítmica densificada)
+umbral_hot95 <- quantile(modelo_df_completo$log_Qdens, 0.95, na.rm = TRUE)
+
+# Crea variable binaria de hotspot (1 si es hotspot, 0 si no)
 modelo_df_completo <- modelo_df_completo |>
-  # Agregar variable binaria a modelo_df_completo
-  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral95)) |>
-  mutate(across(
-    c(dem_cv, slope_cv, dem_mean, slope_mean, log_dem_cv, log_slope_cv, dem_cv_dens, slope_cv_dens, log_dem_cv_dens, log_slope_cv_dens),
-    ~ scale(.)[,1],
-    .names =  "{.col}_z" 
-  ))
+  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral_hot95))
+```
+
+Este bloque crea subconjuntos balanceados para ajustar modelos logit explicando hotspots de diversidad. Se comparan dos estrategias:
+
+-   **Estrategia A:** Usar *coldspots* (valores más bajos de diversidad) como clase 0.
+
+-   **Estrategia B:** Seleccionar aleatoriamente una proporción de no-hotspots equivalente a 4 veces el número de hotspots, para aproximar una distribución realista de clases.
+
+```{r seleccion_subconjuntos_balanceados}
+
+# Cuántos hotspots hay en total
+n_hot <- modelo_df_completo |> filter(log_Qdens_hot95 == 1) |> nrow()
+
+# Estrategia A: Coldspots (5% inferior de diversidad log_Qdens)
+umbral_cold <- quantile(modelo_df_completo$log_Qdens, 0.05, na.rm = TRUE)
+
+#contiene únicamente hotspots (1) y coldspots (0).
+modelo_df_cold <- modelo_df_completo |>
+  filter(log_Qdens >= umbral_hot95 | log_Qdens <= umbral_cold) |>
+  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral_hot95))
+
+# Estrategia B: Selección aleatoria de no-hotspots
+# ontiene hotspots (1) y un subconjunto aleatorio balanceado de no-hotspots (0)
+# Número total de hotspots (clase positiva)
+n_hot <- modelo_df_completo |> filter(log_Qdens_hot95 == 1) |> nrow()
+
+# Número de no-hotspots deseado (proporción 1:3)
+n_nohot <- n_hot * 4
+
+# Semilla para reproducibilidad
+set.seed(123)
+
+# Selección de muestra con proporción 1:3
+modelo_df_balanceado <- modelo_df_completo |>
+  filter(
+    log_Qdens_hot95 == 1 | 
+      row_number() %in% sample(which(log_Qdens_hot95 == 0), n_nohot)
+  )
+
+
 
 ```
 
 ## 3. Modelado
 
-Se corre un modelo GLM binomial para explicar los hotspots
+Se corre un modelo GLM binomial para explicar los hotspots. 
 
-```{r}
+Este bloque ajusta dos modelos binomiales:
 
-# 2. Ajustar modelo directamente sobre modelo_df_completo
-glm_hot <- glm(
-    log_Qdens_hot95 ~ dem_mean_z + log_slope_cv_dens_z, 
-    data = modelo_df_completo,
-    family = binomial())
+### 3.1  Usando hotspots (95%) vs coldspots (5%)
 
-# 3. Calcular predicciones y residuos en la misma tabla
-modelo_df_completo <- modelo_df_completo |>
+```{r ajuste_modelos_logit_A}
+
+# === Modelo A: Hotspots vs Coldspots ===
+glm_hot_cold <- glm(
+  formula = log_Qdens_hot95 ~ dem_mean_z + slope_mean_z + log_dem_cv_dens_z +
+    log_slope_cv_dens_z + log_lst_cv_temp_dens_z,
+  data = modelo_df_cold,
+  family = binomial()
+)
+
+# Agrega predicción y residuales a modelo_df_cold
+modelo_df_cold <- modelo_df_cold |>
   mutate(
-    prob_hot95 = predict(glm_hot, newdata = modelo_df_completo, type = "response"),
-    resid_hot95 = residuals(glm_hot, type = "response")
+    prob_hot_cold = predict(glm_hot_cold, type = "response"),
+    resid_hot_cold = residuals(glm_hot_cold, type = "response")
   )
 
-#Resumen estadístico
-summary(glm_hot)
-performance::r2_tjur(glm_hot)
+# Reporta ajuste
+summary(glm_hot_cold)
+performance::r2_tjur(glm_hot_cold)
+
 
 
 ```
 
-### 4.1 Visualización de resultados
+**Modelo A** presentó síntomas claros de *separación perfecta* (perfect separation), como:
 
-Líneas de regresión con intervalos, puntos y R²
+* Coeficientes extremadamente grandes.
+* Errores estándar exorbitantes (\>20,000).
+* R² de Tjur = 1.0 (indicador de sobreajuste extremo).
+* Máximo número de iteraciones sin convergencia robusta.
+
+### 3.2  Usando hotspots (95%) vs muestra aleatoria balanceada de no-hotspots
+
+```{r ajuste_modelos_logit_B}
+
+# === Modelo B: Hotspots vs muestra aleatoria (balanceado) ===
+glm_hot_bal <- glm(
+  formula = log_Qdens_hot95 ~ dem_mean_z + slope_mean_z + log_dem_cv_dens_z +
+    log_slope_cv_dens_z + log_lst_cv_temp_dens_z,
+  data = modelo_df_balanceado,
+  family = binomial()
+)
+
+# Agrega predicción y residuales a modelo_df_balanceado
+modelo_df_balanceado <- modelo_df_balanceado |>
+  mutate(
+    prob_hot_bal = predict(glm_hot_bal, type = "response"),
+    resid_hot_bal = residuals(glm_hot_bal, type = "response")
+  )
+
+# Reporta ajuste
+summary(glm_hot_bal)
+performance::r2_tjur(glm_hot_bal)
+
+```
+
+En contraste, el modelo B mostró:
+
+* Estabilidad numérica adecuada.
+* Coeficientes significativos para algunas variables clave.
+* R² de Tjur = 0.812 (alto, pero plausible).
+
+El *modelo B es preferido por su robustez, interpretabilidad y aplicabilidad predictiva.** En adelante, nos enfocaremos en describir gráficamente sus efectos, residuales y predicciones espaciales.
+
+## 4. Visualización de resultados
+
+### 4.1 Coeficientes (efectos fijos)
+
+Se muestran los coeficientes con sus intervalos de confianza. Coeficientes alejados de 0 y con intervalos estrechos indican mayor significancia y robustez en su efecto sobre la probabilidad de hotspot.
 
 ```{r}
 
+p_coeficientes <- plot_model(glm_hot_bal, 
+                             type = "est", 
+                             vline.color = "red", 
+                             show.values = TRUE, 
+                             transform = NULL,
+                             value.offset = .3) +
+  labs(title = "Coeficientes estimados del modelo B")
 
-library(sjPlot)
-library(ggplot2)
+p_coeficientes
 
-# Estilo base como el que usas para p_logQdens
-theme_set(theme_minimal())
-
-p1 <- plot_model(glm_hot, type = "pred", terms = "dem_cv [all]", title = NULL) + theme_minimal()
-p2 <- plot_model(glm_hot, type = "pred", terms = "slope_cv [all]", title = NULL) + theme_minimal()
-p3 <- plot_model(glm_hot, type = "pred", terms = "dem_mean [all]", title = NULL) + theme_minimal()
-p4 <- plot_model(glm_hot, type = "pred", terms = "slope_mean [all]", title = NULL) + theme_minimal()
-p5 <- plot_model(glm_hot, type = "pred", terms = "dem_cv_dens [all]", title = NULL) + theme_minimal()
-p6 <- plot_model(glm_hot, type = "pred", terms = "slope_cv_dens [all]", title = NULL) + theme_minimal()
-
-p_curvas_marginales_logit <- (p1 + p2 + p3) / (p4 + p5 + p6)
-
-ggsave(here("Figures", "mosaico_curvas_marginales_logit.png"),
-       plot = p_curvas_marginales_logit,
-       width = 10,
-       height = 6,
+# Guarda la figura
+ggsave(here("Figures", "coeficientes_logit_b.png"),
+       plot = p_coeficientes,
+       width = 6,
+       height = 5,
        dpi = 350)
 
 ```
 
-Chequeo de residuales
+### 4.2 Gráfica de efectos marginales
+
+Estas curvas muestran cómo varía la probabilidad predicha de hotspot a medida que cambia el valor estandarizado de cada covariable, manteniendo las demás constantes. Este bloque genera curvas marginales para las covariables significativas del modelo logit balanceado (modelo B).
 
 ```{r}
 
-p_resid_dem_mean <- ggplot(modelo_df_completo, aes(x = dem_mean, y = resid_hot95)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Residuales vs dem_mean", y = "Residuos", x = "Altitud media") +
+# log_dem_cv_dens_z: log(CV de elevación densificado por área), estandarizado
+p_margin_log_dem_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_dem_cv_dens_z [all]", title = NULL) +
+  labs(x = "log(CV de elevación, densificado y estándar)",
+       y = "Probabilidad predicha de hotspot") +
   theme_minimal()
 
-p_resid_log_slope_cv_dens_logit <- ggplot(modelo_df_completo, aes(x = log_slope_cv_dens, y = resid_hot95)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Residuales vs log(slope CV densificado)", y = "Residuos", x = "log(slope CV densificado)") +
+# log_slope_cv_dens_z: log(CV de pendiente densificado por área), estandarizado
+p_margin_log_slope_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_slope_cv_dens_z [all]", title = NULL) +
+  labs(x = "log(CV de pendiente, densificado y estándar)",
+       y = "Probabilidad predicha de hotspot") +
   theme_minimal()
 
+# log_lst_cv_temp_dens_z: log(CV de temperatura superficial densificado por área), estandarizado
+p_margin_log_lst_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_lst_cv_temp_dens_z [all]", title = NULL) +
+  labs(x = "log(CV temporal de temperatura superficial, densificado y estándar)",
+       y = "Probabilidad predicha de hotspot") +
+  theme_minimal()
 
-p_resid_dem_mean + p_resid_log_slope_cv_dens_logit
+# Mosaico de curvas marginales
+p_curvas_marginales_logit_b <- p_margin_log_dem_cv_dens_z + p_margin_log_slope_cv_dens_z + p_margin_log_lst_cv_dens_z
+
+# Visualiza las curvas
+p_curvas_marginales_logit_b
+
+# Guarda la figura
+ggsave(here("Figures", "curvas_marginales_modelo_logit_b.png"),
+       plot = p_curvas_marginales_logit_b,
+       width = 12,
+       height = 5,
+       dpi = 350)
+
+
 ```
 
-Mapas de predicción y residuo
+
+
+Chequeo de residuales (escribir lo que se espera de esto... que los residuales tengan x forma significa ...)
 
 ```{r}
 
-library(patchwork)
+p_resid_log_dem_cv_dens_z <- ggplot(modelo_df_balanceado, aes(x = log_dem_cv_dens_z, y = resid_hot_bal)) +
+  geom_point(alpha = 0.3, color = "#56B4E9") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(y = "Residuos", x = "log(CV de elevación, densificado y estándar)") +
+  theme_minimal()
 
-p1 <- ggplot(modelo_df_completo) +
-  geom_sf(aes(fill = prob_hot95), color = NA) +
+p_resid_log_slope_cv_dens_z <- ggplot(modelo_df_balanceado, aes(x = log_slope_cv_dens_z, y = resid_hot_bal)) +
+  geom_point(alpha = 0.3, color = "#56B4E9") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(y = "Residuos", x = "log(CV de pendiente, densificado y estándar)") +
+  theme_minimal()
+
+p_resid_log_lst_cv_temp_dens_z <- ggplot(modelo_df_balanceado, aes(x = log_lst_cv_temp_dens_z, y = resid_hot_bal)) +
+  geom_point(alpha = 0.3, color = "#56B4E9") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(y = "Residuos", x = "log(CV temporal de temperatura superficial, densificado y estándar)") +
+  theme_minimal()
+
+
+p_resid_balanceado_logit <- p_resid_log_dem_cv_dens_z + p_resid_log_slope_cv_dens_z + p_resid_log_lst_cv_temp_dens_z
+
+ggsave(here("Figures", "mosaico_residuales_logit.png"),
+       plot = p_resid_balanceado_logit,
+       width = 12,
+       height = 5,
+       dpi = 350)
+```
+
+Mapas de predicción y residuo (explicar lo que significa la probabilidad que retorna el modelo)
+
+```{r}
+
+p_mapa_pred <- ggplot(modelo_df_balanceado) +
+  geom_sf(aes(fill = prob_hot_bal), color = NA) +
   scale_fill_viridis_c(option = "viridis", na.value = "white") +
-  labs(title = "Probabilidad predicha de hotspot", fill = "Prob") +
+  labs(title = "Mapa: probabilidad predicha de hotspot", fill = "Probabilidad") +
   theme_minimal()
 
-p2 <- ggplot(modelo_df_completo) +
-  geom_sf(aes(fill = resid_hot95), color = NA) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", na.value = "white") +
-  labs(title = "Residuo del modelo binomial", fill = "Residuo") +
+p_mapa_resid <- ggplot(modelo_df_balanceado) +
+  geom_sf(aes(fill = resid_hot_bal), color = NA) +
+  scale_fill_viridis_c(option = "plasma", na.value = "white") +
+  labs(title = "Mapa: residuales del modelo", fill = "Residuo") +
   theme_minimal()
 
-p1 + p2  # con patchwork
-
-
+p_mapas_logit <- p_mapa_pred + p_mapa_resid
 
 
 #guarda el último gráfico generado
 ggsave(here("Figures", "mosaico_mapa_prediccion_logit.png"),
-       plot = p_map_predi_logit,
+       plot = p_mapas_logit,
        width = 10,
        height = 6,
        dpi = 350)
 ```
+
+

@@ -32,6 +32,7 @@ procesamiento_lotes_imagen <- function(sf_data,
                                        export_folder = "GEE_exports",
                                        simplify_tolerance = 0.001,
                                        start_idx = 1,
+                                       export_log_csv = TRUE,
                                        max_index = nrow(sf_data),
                                        pause_on_fail = 20) {
   

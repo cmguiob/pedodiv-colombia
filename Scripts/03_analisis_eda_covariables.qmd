@@ -58,8 +58,8 @@ library(googledrive)
 ee_clean_user_credentials()      # Limpia credenciales de GEE
 ee_clean_pyenv()           # Limpia variables de entorno de reticulate
 reticulate::py_run_string("import ee; ee.Authenticate()")
-#reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')") #cuenta gmail propia
-reticulate::py_run_string("import ee; ee.Initialize(project='optimal-signer-459113-i1')") #cuenta UNAL
+reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')") #cuenta gmail propia
+#reticulate::py_run_string("import ee; ee.Initialize(project='optimal-signer-459113-i1')") #cuenta UNAL
 
 # === Autenticación Google Drive ===
 googledrive::drive_auth()
@@ -138,11 +138,11 @@ bbox_ee <- ee$Geometry$Rectangle(
 
 ## 2. Derivación de variables raster en GEE
 
-A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original.
+A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original pero se exportan a 50m de resolución.
 
 ### 2.1 DEM
 
-Se define el objeto raster de elevación y se visualiza su extensión.
+El gradiente de elevación o la variabilidad de la elevación pueden contribuir al desarrollo de la pedodiversidad.
 
 ```{r extraccion_dem}
 
@@ -280,33 +280,6 @@ Map$addLayer(
 
 ```
 
-### 2.5 Índice de polarización
-
-```{r}
-
-vhvv_media <- ee$ImageCollection("COPERNICUS/S1_GRD")$
-  filterBounds(bbox_ee)$
-  filterDate("2015-01-01", "2024-01-01")$
-  filter(ee$Filter$listContains("transmitterReceiverPolarisation", "VV"))$
-  filter(ee$Filter$listContains("transmitterReceiverPolarisation", "VH"))$
-  map(function(img) {
-    img$select("VH")$
-      divide(img$select("VV"))$
-      rename("vhvv")
-  })$
-  median()$
-  rename("vhvv")
-
-# Visualización en el visor de rgee
-Map$setCenter(lon = -74, lat = 4, zoom = 5)
-Map$addLayer(
-  vhvv_media,
-  visParams = list(min = 0, max = 2, palette = c("brown", "white", "blue")),
-  name = "VH/VV mediana"
-)
-
-```
-
 ## 3. Extracción de métricas
 
 La función se encuentra en un script externo. Esta ...
@@ -321,27 +294,12 @@ registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_
 
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 1, max_index = 600, batch_s = 100, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
+registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 29831, max_index = 30478, batch_s = 50, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
 
-registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_cv_temporal, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
-
-registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "VHVV_media", scale = 50)
+registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_cv_temporal, start_idx = 4206, max_index = 4355, batch_s = 20, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
 
 
 
-```
-
-Verificación de tasks enviados
-
-```{r}
-
-verificar_tasks_enviados <- function(log_df) { library(dplyr) library(rgee)
-
-# Extraer todas las tareas activas/pendientes/finalizadas tasks <- ee_manage_task_list() |> as.data.frame() |> arrange(description, state, update_time) |> group_by(description) |> slice_tail(n = 1) |> # conserva solo la última tarea por nombre ungroup() |> select(description, state)
-
-# Unir con el log original según descripción log_df_verificado <- log_df |> left_join(tasks, by = c("task_description" = "description")) |> rename(status_real = state)
-
-return(log_df_verificado) }
 ```
 
 **Post procesamiento de .csv**
@@ -421,7 +379,9 @@ combinar_y_subir_csv("DEM")
 
 combinar_y_subir_csv("SLOPE")
 
+combinar_y_subir_csv("LST_cv_temporal")
 
+combinar_y_subir_csv("LST_media_espacial")
 ```
 
 Se cargan y se convierte geometria de geojson a sf
@@ -454,8 +414,6 @@ slope_cv_sf <- st_as_sf(
   data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), #convierte a sf
   crs = 4326) |>
   select(-.geo) |> #elimina columna de geometria obsoleta
-  mutate(mean = mean / (180 / pi), #correccion temporal, mientras se descarga lote
-         stdDev = stdDev / (180 / pi)) |>
   mutate(
       slope_cv = stdDev / mean, #calcula coeficiente de variación
       log_slope_cv = log(slope_cv + 1), #calcula log de coeficiente de variación
@@ -464,6 +422,21 @@ slope_cv_sf <- st_as_sf(
   ) |>
 rename(slope_mean = mean, slope_stdDev = stdDev)
 
+
+# Ruta al CSV combinado
+lst_cv_temp <- read_csv(here::here("Data", "OUT_covars_csv","OUT_LST_cv_temporal_combinado.csv" ))
+
+# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
+lst_cv_temporal_sf <- st_as_sf(
+  data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), #convierte a sf
+  crs = 4326) |>
+  select(-.geo) |> #elimina columna de geometria obsoleta
+  mutate(
+    log_lst_mean_temporal_cv = log(mean + 1),
+    lst_mean_temporal_cv_dens = mean/AREA_HA, #densidad de media de CV 
+    log_lst_mean_temporal_cv_dens = log(lst_mean_temporal_cv_dens + 1)
+    )|>
+rename(lst_mean_temporal_cv = mean, lst_stdDev_temporal_cv = stdDev)
 
 ```
 
@@ -482,15 +455,12 @@ slope_df <- slope_cv_sf |>
   st_drop_geometry() |>
   select(-system.index)
 
-# Unir a la tabla base
+lst_temporal_df <- lst_cv_temporal_sf |> 
+  st_drop_geometry() |>
+  select(-system.index)
+
+# Unir las coordenadas con los data frames de covariables
 modelo_df <- ucs_rao_sf |>
-  mutate(
-    #Q = if_else(Q == 0, 1e-3, Q),               # evitar log(0)
-    Qdens = Q / AREA_HA,                        # diversidad por unidad de área
-    log_Qdens = log(Qdens + 1),                     # log-transformación
-    log_Qdens01 = (log_Qdens - min(log_Qdens)) / 
-                  (max(log_Qdens) - min(log_Qdens)) # escalado entre 0–1
-  ) |>
   left_join(
     dem_df,
     by = c("id_creado", "AREA_HA", "UCSuelo")
@@ -498,7 +468,12 @@ modelo_df <- ucs_rao_sf |>
   left_join(
     slope_df,
     by = c("id_creado", "AREA_HA", "UCSuelo")
-  ) 
+  ) |>
+  left_join(
+    lst_temporal_df,
+    by = c("id_creado", "AREA_HA", "UCSuelo")
+  )
+  
 
 ```
 
@@ -527,12 +502,14 @@ p_log_slope_cv_dens <- ggplot(modelo_df, aes(log_slope_cv_dens)) +
 
 p_log_slope_cv_dens
 
+
 p_mosaico_distr_slope <- p_slope_mean + p_log_slope_cv + p_log_slope_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
 ```
 
 Se verifican visualmente las distribuciones de las covariables para DEM
 
 ```{r}
+
 p_dem_mean <- ggplot(modelo_df, aes(dem_mean)) +
   ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
   geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
@@ -555,12 +532,48 @@ p_log_dem_cv_dens <- ggplot(modelo_df, aes(log_dem_cv_dens)) +
 
 p_log_dem_cv_dens
 
+p_log_dem_cv_dens <- ggplot(modelo_df, aes(log_dem_cv_dens)) +
+  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
+  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
+  labs(title = "Distribución de log densidad CV de DEM", y = "Frecuencia", x = "Log media de DEM")
+
+p_log_lst_mean_cv_dens
+
 p_mosaico_distr_DEM <- p_dem_mean + p_log_dem_cv + p_log_dem_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
+```
+
+Se visualizan las distribuciones para LST con coeficiente de variación temporal
+
+```{r}
+
+p_lst_mean_cv <- ggplot(modelo_df, aes(lst_mean_temporal_cv)) +
+  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
+  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
+  labs(title = "Distribución de CV media de LST)", y = "Frecuencia", x = "CV media de LST")
+
+p_lst_mean_cv
+
+p_log_lst_mean_cv <- ggplot(modelo_df, aes(log_lst_mean_temporal_cv)) +
+  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
+  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
+  labs(title = "Distribución de log(CV media de LST)", y = "Frecuencia", x = "Log de CV media de LST")
+
+p_log_lst_mean_cv
+
+p_log_lst_mean_cv_dens <- ggplot(modelo_df, aes(log_lst_mean_temporal_cv_dens)) +
+  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
+  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
+  labs(title = "Distribución de log(densidad de CV media de LST)", y = "Frecuencia", x = "Log de densidad CV media de LST")
+
+p_log_lst_mean_cv_dens
+
+p_mosaico_distr_LST_temp <- p_log_lst_mean_cv + p_log_lst_mean_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
 ```
 
 Visualización espacial de las covariables
 
 ```{r}
+
 p_mapa_dem_mean <- ggplot(modelo_df |> filter(dem_mean >=0)) +
   geom_sf(aes(fill = dem_mean), color = NA) +
   scale_fill_gradientn(colours = pal, na.value = "white") + 
@@ -628,6 +641,30 @@ p_mapa_log_slope_cv_dens <- ggplot(modelo_df) +
   theme_minimal()
 
 p_mapa_log_slope_cv_dens
+
+p_mapa_lst_mean_cv_dens <- ggplot(modelo_df) +
+  geom_sf(aes(fill = lst_mean_temporal_cv_dens), color = NA) +
+  scale_fill_gradientn(colours = pal, na.value = "white") + 
+  labs(title = "Mapa de log(densidad de medai de CV de LST)", fill = "Densidad CV") +
+  theme_minimal()
+
+p_mapa_lst_mean_cv_dens
+
+
+p_mapa_log_lst_mean_cv_dens <- modelo_df |>
+  mutate(lst_cv_dens_plus1 = lst_mean_temporal_cv_dens + 1) |>
+  ggplot() +
+  geom_sf(aes(fill = lst_cv_dens_plus1), color = NA) +
+  scale_fill_gradientn(
+    colours = pal,
+    na.value = "white",
+    trans = "log10",
+    breaks = scales::trans_breaks("log10", function(x) 10^x)
+  ) +
+  labs(title = "Mapa de log(densidad de media de CV de LST)", fill = "Densidad CV") +
+  theme_minimal()
+
+p_mapa_log_lst_mean_cv_dens
 
 p_mapas_covs <- p_mapa_dem_mean + p_mapa_slope_mean + p_mapa_log_dem_cv + p_mapa_log_slope_cv + p_mapa_log_dem_cv_dens + p_mapa_log_slope_cv_dens+ plot_layout(ncol = 2, widths = c(1, 1))
 

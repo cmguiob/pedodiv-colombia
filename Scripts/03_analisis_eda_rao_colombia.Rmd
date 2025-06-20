@@ -3,14 +3,9 @@ title: "Análisis exploratorio de datos de pedodiversidad"
 author: "Carlos Manuel Guío Blanco"
 date: Sys.Date
 output: html_notebook
-
 ---
 
-En este cuaderno se presenta un análisis exploratorio de los datos de pedodiversidad (Q de Rao).
-
-## 1. Configuración
-
-A continuación se cargan las librería necesarias
+En este cuaderno se presenta un análisis exploratorio de los datos de pedodiversidad (Q de Rao) por Unidad Cartográfica de Suelos (UCS), calculada con base en distancias taxonómicas en la nomenclatura de suelos, y sus proporciones.
 
 ```{r config, include = FALSE}
 
@@ -45,15 +40,11 @@ theme(base_size = 14)
 
 ```
 
-## 2. Carga de datos
+## 1. Carga de datos
 
-Los datos producto del procesamiento, se han subido a un repositorio de Zenodo. 
+Los datos producto del procesamiento, se han subido a un repositorio de Zenodo.
 
 ```{r carga}
-
-#Carga local sin internet
-#ruta_ucs_rao <- here::here("Data", "OUTPUT_rao_piloto_sf.qs")
-#ucs_rao_sf <- qs::qread(ruta_ucs_rao) #lectura local
 
 # Corre script externo
 source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
@@ -62,15 +53,13 @@ head(ucs_rao_sf)
 
 ```
 
-
-## 3. Análisis descriptivo
-
+## 2. Análisis descriptivo
 
 Se realiza análisis descriptivo para:
 
-* Comprender la distribución de los datos 
-* Identificar la relación con las áreas de unidades cartográficas, para definir necesidades de normalización, derivación de nuevas variables (e.g. residuales) y metodologías de análisis de patrones de puntos.
-* Identificar relaciones potenciales con otras variables.
+-   Comprender la distribución de los datos
+-   Identificar la relación con las áreas de unidades cartográficas, para definir necesidades de normalización, derivación de nuevas variables (e.g. residuales) y metodologías de análisis de patrones de puntos.
+-   Identificar relaciones potenciales con otras variables.
 
 ### 3.1 Distribución de la diversidad (Q), del área (A) y su relación
 
@@ -82,12 +71,11 @@ Para comparar diferentes formas de la variable, se crean nuevas variables que co
 ucs_rao_sf <- ucs_rao_sf |>
   tidyr::drop_na(Q) |>
   # se deja un mínimo diferente de cero para trabajar con logaritmos
-  dplyr::mutate(Q = case_when(Q == 0 ~ 0.000001, TRUE ~ Q),
+  dplyr::mutate(Q = case_when(Q == 0 ~ 0.001, TRUE ~ Q),
                 Qdens = Q/AREA_HA,
-                log_Qdens = log(Qdens)) 
+                log_Qdens = log(Qdens + 1)) #para evitar log 0
 
 ```
-
 
 Se inicia por un resumen estadístico general
 
@@ -120,25 +108,25 @@ stats_summary <- vars |>
 print(stats_summary)
 
 ```
-Interpertación: 
-Coeficiente de variación (cv) Mide la dispersión relativa respecto a la media.
 
-* CV > 1: variable muy dispersa o con colas largas (potencialmente requiere transformación o uso de pesos en modelos).
-* CV < 1: variable relativamente estable, menos problemática.
+Interpertación: Coeficiente de variación (cv) Mide la dispersión relativa respecto a la media.
 
-2. Skewness (sesgo): Mide la asimetría de la distribución:
+-   CV \> 1: variable muy dispersa o con colas largas (potencialmente requiere transformación o uso de pesos en modelos).
+-   CV \< 1: variable relativamente estable, menos problemática.
 
-* Skewness ≈ 0: simétrica (ideal para muchos modelos).
-* Skewness < 0: sesgo a la izquierda (cola hacia valores bajos).
-* Skewness > 0: sesgo a la derecha (cola hacia valores altos).
+2.  Skewness (sesgo): Mide la asimetría de la distribución:
 
-Valores absolutos > 1 suelen indicar asimetría significativa, y > 2 muy fuerte.
+-   Skewness ≈ 0: simétrica (ideal para muchos modelos).
+-   Skewness \< 0: sesgo a la izquierda (cola hacia valores bajos).
+-   Skewness \> 0: sesgo a la derecha (cola hacia valores altos).
 
-3. Kurtosis (curtosis): Mide la “altura” de la campana y la presencia de colas/extremos:
+Valores absolutos \> 1 suelen indicar asimetría significativa, y \> 2 muy fuerte.
 
-* Kurtosis ≈ 0 (normalizada): similar a la normal.
-* Kurtosis > 0: distribución picuda, colas pesadas.
-* Kurtosis < 0: distribución achatada, menos colas/extremos que la normal.
+3.  Kurtosis (curtosis): Mide la “altura” de la campana y la presencia de colas/extremos:
+
+-   Kurtosis ≈ 0 (normalizada): similar a la normal.
+-   Kurtosis \> 0: distribución picuda, colas pesadas.
+-   Kurtosis \< 0: distribución achatada, menos colas/extremos que la normal.
 
 De acuerdo a esto, Log(Q/A) es la variable más adecuada para modelado, análisis espacial y definición de hotspots: dispersión controlada, sin colas largas, sesgo leve, apta para transformaciones lineales y GLM familia gaussiana (o beta si se normaliza a [0,1]).
 
@@ -196,7 +184,6 @@ tukey_low_lqd  <- q25_lqd - 1.5 * iqr_lqd
 tukey_high_lqd <- q75_lqd + 1.5 * iqr_lqd
 
 ```
-
 
 A continuación se analiza la distribución de Q
 
@@ -274,9 +261,7 @@ ggsave(here("Figures","histogramas_Qdens.png"), width = 9, height = 9, dpi = 350
 
 ```
 
-
 ### 3.2 Representación espacial de Q, A y Q/A
-
 
 ```{r mapas}
 
@@ -340,13 +325,11 @@ ggsave(here("Figures","mapas_Qdens.png"), width = 8, height = 9, dpi = 350)
 
 ```
 
-
 ### 3.3 Cuantificar el efecto del área
 
 A continuación se observa la distribución del área. Esto permite entender si requiere transformación para estudiar su relación con la diversidad.
 
 Se observa la relación entre log(área) y pedodiversidad
-
 
 ```{r dispersion}
 
@@ -378,7 +361,6 @@ Se calcula la correlación
 cor(ucs_rao_sf$Q, ucs_rao_sf$AREA_HA, use = "complete.obs", method = "spearman")
 ```
 
-
 ### 3.4 Relación con otras variables
 
 A contnuación se usan variables cualitativas presentes en los datos de CUS para explorar hipótesis sobre la relación con variables ambientales.
@@ -398,7 +380,6 @@ ggplot(ucs_rao_sf |> tidyr::drop_na(), aes(y = Q, x = PAISAJE)) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 
 ```
-
 
 ```{r rao_clima}
 
