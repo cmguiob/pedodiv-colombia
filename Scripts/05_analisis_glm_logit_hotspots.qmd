@@ -9,7 +9,6 @@ En este cuaderno se presenta el análisis mediante la metodología de modelos li
 
 Las covariables se eligieron partiendo de la hipótesis, que la diversidad de suelos está condicionada por la diversidad de otras variables formadoras cuyos proxis de largo plazo pueden derivarse de imágenes satelitales: geomorfología, clima, hidrología. La vegetación, debido a su alta variabilidad temporal, no se utiliza como proxi para explicar la diversidad de suelos, que se entiende como un proceso que puede durar cientos a millones de años.
 
-
 ```{r configuracion}
 #Para exportar como .R plano
 # knitr::purl('05_analisis_glm_hotspots.qmd')
@@ -24,10 +23,10 @@ pacman::p_load(
   readr,       # leer CSV rápido
   performance,
   ggdist,
-  scales,
+  scales,      #transformaciones y escalas gráficas
   ggplot2,     # gráficos
-  ggpubr,
-  googledrive,
+  paletteer,   #paletas de colores
+  googledrive, #importar y exportar a Google Drive
   patchwork,   # unir gráficos
   qs           # guardar objetos rápido
 )
@@ -36,7 +35,7 @@ pacman::p_load(
 theme(base_size = 14)
 
 # === Autenticación Google Drive ===
-googledrive::drive_auth()
+#googledrive::drive_auth()
 ```
 
 ## 1. Carga de datos
@@ -61,7 +60,7 @@ ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
 
 ```
 
-Se cargan y se convierte geometria de geojson a sf
+Se cargan las covariables y se convierte geometria de GeoJSON a sf
 
 ```{r}
 
@@ -105,9 +104,34 @@ rename(slope_mean = mean, slope_stdDev = stdDev)
 
 ## 2. Post procesamiento
 
-```{r transforma_crs}
+Se unen las covariables
 
+```{r join_covars}
 
+# Extraer solo columnas útiles de dem y slope
+dem_df <- dem_cv_sf |> 
+  st_drop_geometry() |>
+  select(-system.index)
+
+slope_df <- slope_cv_sf |> 
+  st_drop_geometry() |>
+  select(-system.index)
+
+# Unir a la tabla base
+modelo_df <- ucs_rao_sf |>
+  mutate(
+    #Q = if_else(Q == 0, 1e-3, Q),               # evitar log(0)
+    Qdens = Q / AREA_HA,                        # diversidad por unidad de área
+    log_Qdens = log(Qdens + 1),                     # log-transformación
+  ) |>
+  left_join(
+    dem_df,
+    by = c("id_creado", "AREA_HA", "UCSuelo")
+  ) |>
+  left_join(
+    slope_df,
+    by = c("id_creado", "AREA_HA", "UCSuelo")
+  ) 
 
 
 ```
@@ -132,14 +156,17 @@ Se establecen los percentiles y clasifican los extremos:
 
 umbral95 <- quantile(modelo_df_completo$log_Qdens, 0.95, na.rm = TRUE)
 
-# 1. Agregar variable binaria a modelo_df_completo
+
 modelo_df_completo <- modelo_df_completo |>
-  mutate(
-    log_Qdens_hot95 = as.integer(log_Qdens >= umbral95)
-  )
+  # Agregar variable binaria a modelo_df_completo
+  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral95)) |>
+  mutate(across(
+    c(dem_cv, slope_cv, dem_mean, slope_mean, log_dem_cv, log_slope_cv, dem_cv_dens, slope_cv_dens, log_dem_cv_dens, log_slope_cv_dens),
+    ~ scale(.)[,1],
+    .names =  "{.col}_z" 
+  ))
 
 ```
-
 
 ## 3. Modelado
 
@@ -149,7 +176,7 @@ Se corre un modelo GLM binomial para explicar los hotspots
 
 # 2. Ajustar modelo directamente sobre modelo_df_completo
 glm_hot <- glm(
-    log_Qdens_hot95 ~ dem_mean + log_slope_cv_dens, 
+    log_Qdens_hot95 ~ dem_mean_z + log_slope_cv_dens_z, 
     data = modelo_df_completo,
     family = binomial())
 
@@ -201,22 +228,20 @@ Chequeo de residuales
 
 ```{r}
 
-p_resid_dem_mean_logit <- ggplot(modelo_df_completo, aes(x = dem_mean, y = resid_hot95)) +
+p_resid_dem_mean <- ggplot(modelo_df_completo, aes(x = dem_mean, y = resid_hot95)) +
   geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_smooth(method = "loess", se = FALSE, color = "#FFD700") +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(title = "Residuales vs dem_mean", y = "Residuos", x = "Altitud media") +
   theme_minimal()
 
-p_resid_dem_mean_logit <- ggplot(modelo_df_completo, aes(x = log_slope_cv_dens, y = resid_hot95)) +
+p_resid_log_slope_cv_dens_logit <- ggplot(modelo_df_completo, aes(x = log_slope_cv_dens, y = resid_hot95)) +
   geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_smooth(method = "loess", se = FALSE, color = "#FFD700") +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(title = "Residuales vs log(slope CV densificado)", y = "Residuos", x = "log(slope CV densificado)") +
   theme_minimal()
 
 
-
+p_resid_dem_mean + p_resid_log_slope_cv_dens_logit
 ```
 
 Mapas de predicción y residuo
