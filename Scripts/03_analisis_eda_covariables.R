@@ -1,21 +1,4 @@
----
-title: "Análisis de regresión con modelos lineales generalziados (GLM)"
-author: "Carlos M. Guío Blanco"
-format: html
-editor: visual
----
-
-Este cuaderno implementa en un solo flujo la conexión de R con Google Earth Engine para derivar atributos geomorfométricos e hidroclimáticos satelitales, cuantificar la heterogeneidad interna de estos atributos para cada Unidad Cartográfica de Suelo (UCS) mediante el coeficiente de variación, y finalmente ajustar un modelo logístico que use estas covariables satelitales para explicar la ocurrencia de “hotspots” de pedodiversidad.
-
-**Estructura del script**
-
-1.  **Inicialización**: carga de librerías y autenticación en Earth Engine.
-2.  **Carga de vectores**: UCS armonizadas para área de estudio (Andina, Caribe, Pacífico).
-3.  **Derivación de rasters**: extracción y cálculo de elevacón, pendiente, curvatura vertical (TAGEE), temperatura superficial (Landsat) y VH/VV (Sentinel 1).
-4.  **Extracción de métricas**: media, desviación estándar y CV por polígono para cada variable.
-5.  **Modelado**: ensamblaje de datos y ajuste de un GLM logit ponderado por área para predecir hotspots.
-
-```{r configuracion}
+## ----configuracion-------------------------------------------------------------------------------------------
 
 #Para exportar como .R plano
 # knitr::purl('05_analisis_glm_hotspots.qmd')
@@ -32,7 +15,6 @@ pacman::p_load(
   purrr,       # funciones map*
   broom,
   readr,       # leer CSV rápido
-  performance,
   ggdist,
   scales,
   ggplot2,     # gráficos
@@ -60,16 +42,14 @@ library(googledrive)
 ee_clean_user_credentials()      # Limpia credenciales de GEE
 ee_clean_pyenv()           # Limpia variables de entorno de reticulate
 reticulate::py_run_string("import ee; ee.Authenticate()")
-#reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')")
-reticulate::py_run_string("import ee; ee.Initialize(project='optimal-signer-459113-i1')")
+#reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')") #cuenta gmail propia
+reticulate::py_run_string("import ee; ee.Initialize(project='optimal-signer-459113-i1')") #cuenta UNAL
 
 # === Autenticación Google Drive ===
 googledrive::drive_auth()
-```
 
-Prueba de funcionamiento de rgee
 
-```{r verifica_configuracion}
+## ----verifica_configuracion----------------------------------------------------------------------------------
 
 # Se consultan datos de DEM
 img <- ee$Image("USGS/SRTMGL1_003")
@@ -79,15 +59,9 @@ img$propertyNames()$getInfo()
 
 # Consultar una propiedad específica, e.g. keywords
 img$get("keywords")$getInfo()
-```
 
-## 1. Carga de datos vectoriales
 
-**Carga de datos de pedodiversidad de UCS**
-
-Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo.
-
-```{r carga_pedodiversidad}
+## ----carga_pedodiversidad------------------------------------------------------------------------------------
 
 # Corre script externo para cargar
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
@@ -104,13 +78,9 @@ ggplot(data = ucs_rao_sf) +
   geom_sf(aes(fill = UCSuelo), color = NA) +  
   theme_void() +                             
   theme(legend.position = "none") 
-```
 
-**Armonización**
 
-Se definen parámetros de extensión, CRS y resolución para armonizar los datos de GEE con con los datos de pedodiversidad de UCS. Para la definición del área de recorte se toma un buffer sobre el objeto de sf. Esto amortiguará posteriormente efectos de borde en el cálculo de la diversidad. No se recomienda enviar el objeto completo y hacer el buffer en GEE, dado que el envío de un ubjeto con numerosos multipoligonos (como es el caso) es prohibitivo en GEE. Los envios no pueden superar 10MB por tarea.
-
-```{r transforma_crs}
+## ----transforma_crs------------------------------------------------------------------------------------------
 
 # Transforma a crs 4326 antes de pasarlo a GEE
 ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
@@ -119,11 +89,9 @@ ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
 # #Extrae bounding boxdel área del subconjunto
 bb_sf_4326 <- st_bbox(ucs_sf_4326)
 
-```
 
-Crea geometria de bbox en GEE usando las coordenadas del bbox creado en R con sf.
 
-```{r  tansform_ee}
+## ----tansform_ee---------------------------------------------------------------------------------------------
 
 # Convertir a rectángulo de Earth Engine
 bbox_ee <- ee$Geometry$Rectangle(
@@ -136,17 +104,9 @@ bbox_ee <- ee$Geometry$Rectangle(
   geodesic = FALSE
 )
 
-```
 
-## 2. Derivación de variables raster en GEE
 
-A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original.
-
-### 2.1 DEM
-
-Se define el objeto raster de elevación y se visualiza su extensión.
-
-```{r extraccion_dem}
+## ----extraccion_dem------------------------------------------------------------------------------------------
 
 # Carga y suavizado del DEM SRTM 30 m
 dem_clip <- ee$Image("USGS/SRTMGL1_003")$clip(bbox_ee)
@@ -160,11 +120,9 @@ Map$addLayer(
   name = "DEM SRTM (nativo 30m)"
   )
 
-```
 
-### 2.2 Pendiente
 
-```{r extraccion_pendiente}
+## ----extraccion_pendiente------------------------------------------------------------------------------------
 
 # Procesamiento de pendiente (slope) a partir del SRTM
 slope_clip <- ee$Terrain$
@@ -176,19 +134,13 @@ slope_clip <- ee$Terrain$
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   slope_clip,
-  visParams = list(min = 0, max = 70,
+  visParams = list(min = 0, max = 50,
                    palette = viridis::viridis(10)), 
   name = "Pendiente SRTM (nativo 30m)"
   )
-```
 
-### 2.3 Curvatura vertical
 
-A continuación se invoca la función terrainAnalysis del módulo TAGEE en GEE. Al hacerlo se calcula en la nube de Earth Engine un conjunto completo de atributos geomorfométricos a partir del DEM de entrada.TAGEE utliza un DEM base de ...
-
-Cada vez que se llama a py_install() o importa un nuevo módulo con reticulate::import(), reticulate reinicia o “reconfigure” el intérprete Python, y por tanto se debe repetir la inicialización de Earth Engine.
-
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 # Bloque único de setup (solo la primera vez)
 if (!py_module_available("tagee")) {
@@ -218,13 +170,9 @@ Map$addLayer(
   name = "Curvatura vertical (±0.00005)"
 )
 
-```
 
-### 2.4 Temperatura superficial
 
-La temperatura superficial se obtiene a partir de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se obitene en unidades de ... se transforma...
-
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 # Temperatura superficial (LST)
 lst_media <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
@@ -244,11 +192,9 @@ Map$addLayer(
   name  = "LST mediana"
 )
 
-```
 
-### 2.5 Índice de polarización
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 vhvv_media <- ee$ImageCollection("COPERNICUS/S1_GRD")$
   filterBounds(bbox_ee)$
@@ -271,33 +217,25 @@ Map$addLayer(
   name = "VH/VV mediana"
 )
 
-```
 
-## 3. Extracción de métricas
 
-La función se encuentra en un script externo. Esta ...
-
-...los raster se muestrean a 50m si su resolución es mas fina, lo cual equivale a escala 1:100.000. Si la resolución es mas gruesa, se utiliza la que esté disponible.
-
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 source(here::here("Scripts", "00_funcion_procesamiento_lotes_imagen.R"), encoding = "UTF-8")
 
 registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_idx = 1, max_index = 43384, variable_name = "DEM", scale = 50)
 
-registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 2, variable_name = "SLOPE", scale = 50)
+registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 2, variable_name = "SLOPE", scale = 50)
 
-registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_media", scale = 50)
+registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 531, max_index = 800, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_media", scale = 50)
 
 registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "VHVV_media", scale = 50)
 
 
 
-```
 
-Verificación de tasks enviados
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 verificar_tasks_enviados <- function(log_df) { library(dplyr) library(rgee)
 
@@ -306,13 +244,9 @@ verificar_tasks_enviados <- function(log_df) { library(dplyr) library(rgee)
 # Unir con el log original según descripción log_df_verificado <- log_df |> left_join(tasks, by = c("task_description" = "description")) |> rename(status_real = state)
 
 return(log_df_verificado) }
-```
 
-**Post procesamiento de .csv**
 
-El código a continuación lee todos los .csv de una propiedad (por ejemplo, "slope"),los combina en un solo data.frame, lo guarda como OUT_slope_combinado.csv (o OUT\_<propiedad>\_combinado.csv según corresponda), y lo sube automáticamente al repositorio del proyecto, usando el paquete googledrive.
-
-```{r reubicar_googledrive}
+## ----reubicar_googledrive------------------------------------------------------------------------------------
 
 combinar_y_subir_csv <- function(propiedad,
                                  carpeta_drive_id_origen = "17yxwhlpgL4EG8inI5u8Nwi08wOrnhJiM",  # GEE_exports
@@ -375,20 +309,18 @@ combinar_y_subir_csv <- function(propiedad,
   message("🧹 Archivos temporales eliminados.")
 }
 
-```
 
-Aplica la función para las covariables
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 combinar_y_subir_csv("DEM")
 
 combinar_y_subir_csv("SLOPE")
-```
 
-Se cargan y se convierte geometria de geojson a sf
 
-```{r}
+
+
+## ------------------------------------------------------------------------------------------------------------
 
 
 # Ruta al CSV combinado
@@ -427,13 +359,9 @@ slope_cv_sf <- st_as_sf(
 rename(slope_mean = mean, slope_stdDev = stdDev)
 
 
-```
 
-## 4. EDA covariables
 
-Ya que `dem_cv_sf`, `slope_cv_sf` y `ucs_rao_sf` comparten `id_creado` como identificador único, se hace un `left_join` sucesivo para combinar sus métricas
-
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 
 # Extraer solo columnas útiles de dem y slope
 dem_df <- dem_cv_sf |> 
@@ -462,11 +390,9 @@ modelo_df <- ucs_rao_sf |>
     by = c("id_creado", "AREA_HA", "UCSuelo")
   ) 
 
-```
 
-Se verifican visualmente las distribuciones de las covariables para SLOPE
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 p_slope_mean <- ggplot(modelo_df, aes(slope_mean)) +
   ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
   geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
@@ -490,11 +416,9 @@ p_log_slope_cv_dens <- ggplot(modelo_df, aes(log_slope_cv_dens)) +
 p_log_slope_cv_dens
 
 p_mosaico_distr_slope <- p_slope_mean + p_log_slope_cv + p_log_slope_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
-```
 
-Se verifican visualmente las distribuciones de las covariables para DEM
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 p_dem_mean <- ggplot(modelo_df, aes(dem_mean)) +
   ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
   geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
@@ -518,11 +442,9 @@ p_log_dem_cv_dens <- ggplot(modelo_df, aes(log_dem_cv_dens)) +
 p_log_dem_cv_dens
 
 p_mosaico_distr_DEM <- p_dem_mean + p_log_dem_cv + p_log_dem_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
-```
 
-Visualización espacial de las covariables
 
-```{r}
+## ------------------------------------------------------------------------------------------------------------
 p_mapa_dem_mean <- ggplot(modelo_df |> filter(dem_mean >=0)) +
   geom_sf(aes(fill = dem_mean), color = NA) +
   scale_fill_gradientn(colours = pal, na.value = "white") + 
@@ -601,141 +523,4 @@ ggsave(here("Figures", "mosaico_mapa_covariables_DEM.png"),
        height = 10,
        dpi = 350)
 
-```
 
-## 5. Modelado GLM
-
-Separo los datos con y sin NA, para inspección y para correr modelo
-
-```{r}
-
-# Subconjunto sin NA: usado para modelado
-modelo_df_completo <- modelo_df |> 
-drop_na(log_Qdens, dem_cv, slope_cv, dem_mean, slope_mean, log_dem_cv, log_slope_cv, dem_cv_dens, slope_cv_dens)
-
-# Subconjunto con al menos un NA
-modelo_df_NA <- modelo_df |> 
-  filter(if_any(c(
-    log_Qdens, dem_cv, slope_cv, dem_mean, slope_mean, log_dem_cv, log_slope_cv, dem_cv_dens, slope_cv_dens), is.na))
-```
-
-Se establecen los percentiles y clasifican los extremos:
-
-```{r}
-
-umbral95 <- quantile(modelo_df_completo$log_Qdens, 0.95, na.rm = TRUE)
-
-# 1. Agregar variable binaria a modelo_df_completo
-modelo_df_completo <- modelo_df_completo |>
-  mutate(
-    log_Qdens_hot95 = as.integer(log_Qdens >= umbral95)
-  )
-
-```
-
-Se corre un modelo GLM binomial para explicar los hotspots
-
-```{r}
-
-# 2. Ajustar modelo directamente sobre modelo_df_completo
-glm_hot <- glm(
-    log_Qdens_hot95 ~ dem_mean + log_slope_cv_dens, 
-    data = modelo_df_completo,
-    family = binomial())
-
-# 3. Calcular predicciones y residuos en la misma tabla
-modelo_df_completo <- modelo_df_completo |>
-  mutate(
-    prob_hot95 = predict(glm_hot, newdata = modelo_df_completo, type = "response"),
-    resid_hot95 = residuals(glm_hot, type = "response")
-  )
-
-#Resumen estadístico
-summary(glm_hot)
-performance::r2_tjur(glm_hot)
-
-
-```
-
-### 4.1 Visualización de resultados
-
-Líneas de regresión con intervalos, puntos y R²
-
-```{r}
-
-
-library(sjPlot)
-library(ggplot2)
-
-# Estilo base como el que usas para p_logQdens
-theme_set(theme_minimal())
-
-p1 <- plot_model(glm_hot, type = "pred", terms = "dem_cv [all]", title = NULL) + theme_minimal()
-p2 <- plot_model(glm_hot, type = "pred", terms = "slope_cv [all]", title = NULL) + theme_minimal()
-p3 <- plot_model(glm_hot, type = "pred", terms = "dem_mean [all]", title = NULL) + theme_minimal()
-p4 <- plot_model(glm_hot, type = "pred", terms = "slope_mean [all]", title = NULL) + theme_minimal()
-p5 <- plot_model(glm_hot, type = "pred", terms = "dem_cv_dens [all]", title = NULL) + theme_minimal()
-p6 <- plot_model(glm_hot, type = "pred", terms = "slope_cv_dens [all]", title = NULL) + theme_minimal()
-
-p_curvas_marginales_logit <- (p1 + p2 + p3) / (p4 + p5 + p6)
-
-ggsave(here("Figures", "mosaico_curvas_marginales_logit.png"),
-       plot = p_curvas_marginales_logit,
-       width = 10,
-       height = 6,
-       dpi = 350)
-
-```
-
-Chequeo de residuales
-
-```{r}
-
-p_resid_dem_mean_logit <- ggplot(modelo_df_completo, aes(x = dem_mean, y = resid_hot95)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_smooth(method = "loess", se = FALSE, color = "#FFD700") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Residuales vs dem_mean", y = "Residuos", x = "Altitud media") +
-  theme_minimal()
-
-p_resid_dem_mean_logit <- ggplot(modelo_df_completo, aes(x = log_slope_cv_dens, y = resid_hot95)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_smooth(method = "loess", se = FALSE, color = "#FFD700") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Residuales vs log(slope CV densificado)", y = "Residuos", x = "log(slope CV densificado)") +
-  theme_minimal()
-
-
-
-```
-
-Mapas de predicción y residuo
-
-```{r}
-
-library(patchwork)
-
-p1 <- ggplot(modelo_df_completo) +
-  geom_sf(aes(fill = prob_hot95), color = NA) +
-  scale_fill_viridis_c(option = "viridis", na.value = "white") +
-  labs(title = "Probabilidad predicha de hotspot", fill = "Prob") +
-  theme_minimal()
-
-p2 <- ggplot(modelo_df_completo) +
-  geom_sf(aes(fill = resid_hot95), color = NA) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", na.value = "white") +
-  labs(title = "Residuo del modelo binomial", fill = "Residuo") +
-  theme_minimal()
-
-p1 + p2  # con patchwork
-
-
-
-
-#guarda el último gráfico generado
-ggsave(here("Figures", "mosaico_mapa_prediccion_logit.png"),
-       plot = p_map_predi_logit,
-       width = 10,
-       height = 6,
-       dpi = 350)
-```
