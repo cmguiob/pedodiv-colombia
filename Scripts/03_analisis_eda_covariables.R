@@ -1,27 +1,26 @@
 ## ----configuracion-------------------------------------------------------------------------------------------
 
 #Para exportar como .R plano
-# knitr::purl('05_analisis_glm_hotspots.qmd')
+# knitr::purl('03_analisis_eda_covariables.qmd')
 
 if (!"pacman" %in% installed.packages()) install.packages("pacman")
 pacman::p_load(
-  here,        # rutas del proyecto
-  remotes,     # instalar desde GitHub
-  sf,          # vectores espaciales
-  geojsonio,   # GeoJSON ↔ objetos R
-  geojsonsf,   # GeoJSON ↔ sf rápido
-  dplyr,       # manipulación tabular
-  tidyr,
-  purrr,       # funciones map*
-  broom,
-  readr,       # leer CSV rápido
-  ggdist,
-  scales,
-  ggplot2,     # gráficos
-  ggpubr,
-  patchwork,   # unir gráficos
-  wesanderson, # paletas de color
-  qs           # guardar objetos rápido
+  here,        # rutas relativas del proyecto
+  sf,          # lectura y manipulación de objetos espaciales vectoriales
+  httr,        # peticiones HTTP REST (consulta servicio Mapa Geológico)
+  geojsonsf,   # GeoJSON ↔ sf rápido (geojson_sf)
+  dplyr,       # gramática de datos: mutate, select, joins
+  tidyr,       # ✗ (no usado; pivot, unnest…)
+  stringr,     # utilidades de texto y regex
+  purrr,       # programación funcional: map*, walk*
+  broom,       # ✗ (no usado; tidy de modelos)
+  readr,       # lectura/escritura rápida de CSV
+  ggdist,      # distribuciones y ‘raincloud’/histinterval
+  scales,      # transformaciones y breaks de ejes
+  ggplot2,     # visualización de datos
+  patchwork,   # combinación de gráficos ggplot
+  wesanderson, # paletas continuas y discretas
+  qs           # ✗ (no usado; serialización rápida .qs)
 )
 
 #Paleta de colores
@@ -69,7 +68,7 @@ source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding =
 # Asignación de id único para cada polígono
 ucs_rao_sf <- ucs_rao_sf |> 
   sf::st_make_valid() |> #valida geometrias problemáticas
-  dplyr::select(id_creado, UCSuelo, AREA_HA, Q) 
+  dplyr::select(id_creado, UCSuelo, AREA_HA) 
 
 ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
@@ -78,6 +77,87 @@ ggplot(data = ucs_rao_sf) +
   geom_sf(aes(fill = UCSuelo), color = NA) +  
   theme_void() +                             
   theme(legend.position = "none") 
+
+
+## ------------------------------------------------------------------------------------------------------------
+
+# Se desagrega la url básica en sus componentes
+url <- httr::parse_url("https://srvags.sgc.gov.co/arcgis/rest/services/Mapa_Geologico_Colombia/Mapa_Geologico_Colombia_V2023/MapServer")
+
+layer_id <- "733"
+
+url$path <- paste(url$path, layer_id, "query", sep = "/")
+
+# Se agregan componentes a la URL para solicitud de información
+url$query <- list(where = "1=1", # para recuperar todos los features
+                  outFields = "*", #para recuperar todos los campos
+                  returnGeometry = "true", #retorna geometrias
+                  f = "geojson") #retorna formato geojson
+
+# Se construye la url
+url_solicitud <- httr::build_url(url)
+
+# Para recuperar los datos espaciales se usa la librería sf
+respuesta <- httr::GET(url_solicitud)
+
+#Se examina la respuesta
+print(respuesta)
+
+geo_sf_wgs84 <- sf::st_read(url_solicitud) |>
+  sf::st_make_valid() |>
+  mutate(
+    # LIMPIEZA -----------------------------------------------------------------
+    edad_limpia = Edad %>% 
+      str_replace_all("\\?", "") %>%    # quita “?”
+      str_trim() %>%                    # quita espacios extremos
+      str_squish(),                     # colapsa espacios múltiples
+    
+    # RECLASIFICACIÓN POR ERA (la MÁS JOVEN domina) ----------------------------
+    era_geo = case_when(
+      # 1) CENOZOICO  ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "paleoceno|eoceno|oligoceno|mioceno|plioceno|pleistoceno|holoceno|
+         aquitaniano|burdigaliano|langhiano|serravaliano|tortoniano|messiniano|
+         zancliano|rupeliano|thanetiano|lutetiano|bartoniano|priaboniano|
+         selandiano|daniense|chattiano",
+        ignore_case = TRUE)
+      ) ~ "Cenozoico",
+      
+      # 2) MESOZOICO  ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "triásico|jurásico|cretácico|berriasiano|valanginiano|barremiano|
+         aptiano|albiano|cenomaniano|turoniano|coniaciano|santoniano|
+         campaniano|maastrichtiano",
+        ignore_case = TRUE)
+      ) ~ "Mesozoico",
+      
+      # 3) PALEOZOICO ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "cámbrico|ordovícico|silúrico|devónico|mississipiano|pridoliano|
+         carbonífero|pennsylvaniano|pérmico",
+        ignore_case = TRUE)
+      ) ~ "Paleozoico",
+      
+      # 4) PROTEROZOICO --------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "sideriano|rhyaciano|orosiriano|statheriano|calymmiano|ectasiano|
+         steniano|toniano|criogénico|ediacariano|mesoproterozoico|
+         neoproterozoico|proterozoico",
+        ignore_case = TRUE)
+      ) ~ "Proterozoico",
+      
+      # 5) SIN DATO ------------------------------------------------------------
+      TRUE ~ "Sin_dato"
+    )
+  ) |>
+  select(descripcion_geo = Descripcion, era_geo)
+
+
+
+#Se visualizan datos geográficamente (edad, sin leyenda)
+ggplot2::ggplot(geo_sf_wgs84) +
+  geom_sf(aes(fill = era_geo),  color = NA) +
+  theme_minimal()
 
 
 ## ----transforma_crs------------------------------------------------------------------------------------------
@@ -174,47 +254,115 @@ Map$addLayer(
 
 ## ------------------------------------------------------------------------------------------------------------
 
-# Temperatura superficial (LST)
-lst_media <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
+#Arma una colección de imágenes LST
+lst_collection_temporal <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
   filterBounds(bbox_ee)$
   filterDate("2013-01-01", "2023-01-01")$
   map(function(img) {
-    img$select("ST_B10")$multiply(0.00341802)$add(149)
+    img$select("ST_B10")$ #banda termal
+      #convierte a grados Celsius, con corrección por escala y offset
+      multiply(0.00341802)$
+      add(149.0)$
+      subtract(273.15)$
+      rename("lst_celsius")
+  })
+
+# Calcula por cada píxel de la colección: stdDev, mean y cv
+# Cálculo del CV temporal = sd / mean de la serie
+lst_temporal_mean <- lst_collection_temporal$mean()$rename("lst_temporal_mean")
+lst_temporal_sd   <- lst_collection_temporal$reduce(ee$Reducer$stdDev())$rename("lst_temporal_sd")
+lst_temporal_cv   <- lst_temporal_sd$divide(lst_temporal_mean)$rename("lst_temporal_cv")
+
+# Visualización del CV temporal
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
+Map$addLayer(
+  lst_temporal_cv,
+  visParams = list(min = 0, max = 0.3, palette = c("blue", "orange", "red")),
+  name = "LST: CV temporal (°C)"
+)
+
+
+## ------------------------------------------------------------------------------------------------------------
+
+lst_img_mediana <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
+  filterBounds(bbox_ee)$
+  filterDate("2013-01-01", "2023-01-01")$
+  map(function(img) {
+    # Aplica escala y offset, y convierte a Celsius
+    img$select("ST_B10")$
+      multiply(0.00341802)$
+      add(149.0)$
+      subtract(273.15)$
+      rename("lst_celsius")
   })$
   median()$
-  rename("lst")
+  rename("lst_celsius")
 
-# Visualización
-Map$setCenter(-74, 4, 5)
+# Visualización en el visor de Earth Engine
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
-  lst_media,
-  visParams = list(min = 270, max = 320, palette = c("blue","white","red")),
-  name  = "LST mediana"
+  lst_img_mediana,
+  visParams = list(min = 10, max = 45, palette = c("blue", "white", "red")),
+  name = "LST mediana (espacial, °C)"
 )
+
 
 
 
 ## ------------------------------------------------------------------------------------------------------------
 
-vhvv_media <- ee$ImageCollection("COPERNICUS/S1_GRD")$
+# Carga y recorta la colección CHIRPS diaria (precipitación en mm)
+chirps_collection <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
   filterBounds(bbox_ee)$
-  filterDate("2015-01-01", "2024-01-01")$
-  filter(ee$Filter$listContains("transmitterReceiverPolarisation", "VV"))$
-  filter(ee$Filter$listContains("transmitterReceiverPolarisation", "VH"))$
-  map(function(img) {
-    img$select("VH")$
-      divide(img$select("VV"))$
-      rename("vhvv")
-  })$
-  median()$
-  rename("vhvv")
+  filterDate("2013-01-01", "2023-01-01")
 
-# Visualización en el visor de rgee
+# Agrega mensual la precipitación acumulada y asigna marca temporal
+chirps_monthly_list <- ee$List$sequence(2013, 2023)$map(ee_utils_pyfunc(function(y) {
+  ee$List$sequence(1, 12)$map(ee_utils_pyfunc(function(m) {
+    start <- ee$Date$fromYMD(y, m, 1)
+    end   <- start$advance(1, "month")
+    chirps_collection$
+      filterDate(start, end)$
+      sum()$
+      clip(bbox_ee)$
+      set("system:time_start", start)
+  }))
+}))$flatten()
+
+# Convierte a ImageCollection mensual acumulada (recortada)
+chirps_monthly_ic <- ee$ImageCollection(chirps_monthly_list)
+
+# Calcula estadísticas por píxel
+precip_mean_temporal <- chirps_monthly_ic$mean()$rename("precip_mean_temporal")
+precip_sd_temporal   <- chirps_monthly_ic$reduce(ee$Reducer$stdDev())$rename("precip_sd_temporal")
+precip_cv_temporal   <- precip_sd_temporal$divide(precip_mean_temporal)$rename("precip_cv_temporal")
+
+# Visualiza el CV de precipitación mensual acumulada
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
-  vhvv_media,
-  visParams = list(min = 0, max = 2, palette = c("brown", "white", "blue")),
-  name = "VH/VV mediana"
+  precip_cv_temporal,
+  visParams = list(min = 0, max = 1, palette = c("blue", "orange", "red")),
+  name = "CHIRPS: CV mensual de precipitación (2013–2023)"
+)
+
+
+
+
+
+
+## ------------------------------------------------------------------------------------------------------------
+
+precip_spatial_median <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
+  filterBounds(bbox_ee)$
+  filterDate("2013-01-01", "2023-01-01")$
+  sum()$
+  rename("precip_spatial_median")
+
+# Visualización en el visor
+Map$addLayer(
+  precip_spatial_median,
+  visParams = list(min = 2000, max = 12000, palette = c("blue", "white", "red")),
+  name = "CHIRPS: Mediana espacial de precipitación (mm)"
 )
 
 
@@ -225,12 +373,15 @@ source(here::here("Scripts", "00_funcion_procesamiento_lotes_imagen.R"), encodin
 
 registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_idx = 1, max_index = 43384, variable_name = "DEM", scale = 50)
 
-registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 2, variable_name = "SLOPE", scale = 50)
+registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media, start_idx = 531, max_index = 800, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_media", scale = 50)
+registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 25294, max_index = 25593, batch_s = 50, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
 
-registro_vvvh <- procesamiento_lotes_imagen(ucs_sf_4326, image = vhvv_media, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "VHVV_media", scale = 50)
+registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_temporal_cv, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
 
+registro_precip_cv_temporal <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_cv_temporal, start_idx = 1, max_index = nrow(ucs_sf_4326), batch_s = 300, reduce_batch_by = 3, variable_name  = "precip_cv_temporal", scale = 500)
+
+registro_precip_spatial <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_spatial_median, start_idx = 2001, max_index = 43384, batch_s = 300,   reduce_batch_by = 3, variable_name  = "precip_mediana_espacial", scale = 500)
 
 
 
@@ -316,6 +467,14 @@ combinar_y_subir_csv <- function(propiedad,
 combinar_y_subir_csv("DEM")
 
 combinar_y_subir_csv("SLOPE")
+
+combinar_y_subir_csv("LST_cv_temporal")
+
+combinar_y_subir_csv("LST_media_espacial")
+
+combinar_y_subir_csv("precip_cv_temporal")
+
+combinar_y_subir_csv("precip_mediana_espacial")
 
 
 

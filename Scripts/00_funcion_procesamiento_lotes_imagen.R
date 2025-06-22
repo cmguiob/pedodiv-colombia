@@ -20,6 +20,7 @@
 #' @param start_idx Índice de inicio para comenzar a procesar (permite reanudar). Default: 1.
 #' @param max_index Último índice a procesar. Default: `nrow(sf_data)`.
 #' @param pause_on_fail Tiempo de espera en segundos después de un fallo. Default: 20.
+#' @param export_log_csv Exportar el log a Google Drive como CSV (TRUE/FALSE). Default: FALSE.  # NUEVO
 #'
 #' @return Data frame con el log de procesamiento: índices, tamaño del batch, estado y descripción.
 
@@ -32,9 +33,9 @@ procesamiento_lotes_imagen <- function(sf_data,
                                        export_folder = "GEE_exports",
                                        simplify_tolerance = 0.001,
                                        start_idx = 1,
-                                       export_log_csv = TRUE,
                                        max_index = nrow(sf_data),
-                                       pause_on_fail = 20) {
+                                       pause_on_fail = 20,
+                                       export_log_csv = FALSE) {   # NUEVO
   
   log_list <- list()  # Registro acumulado de lotes procesados
   

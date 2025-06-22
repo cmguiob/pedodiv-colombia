@@ -17,27 +17,26 @@ Este cuaderno implementa en un solo flujo la conexión de R con Google Earth Eng
 ```{r configuracion}
 
 #Para exportar como .R plano
-# knitr::purl('05_analisis_glm_hotspots.qmd')
+# knitr::purl('03_analisis_eda_covariables.qmd')
 
 if (!"pacman" %in% installed.packages()) install.packages("pacman")
 pacman::p_load(
-  here,        # rutas del proyecto
-  remotes,     # instalar desde GitHub
-  sf,          # vectores espaciales
-  geojsonio,   # GeoJSON ↔ objetos R
-  geojsonsf,   # GeoJSON ↔ sf rápido
-  dplyr,       # manipulación tabular
-  tidyr,
-  purrr,       # funciones map*
-  broom,
-  readr,       # leer CSV rápido
-  ggdist,
-  scales,
-  ggplot2,     # gráficos
-  ggpubr,
-  patchwork,   # unir gráficos
-  wesanderson, # paletas de color
-  qs           # guardar objetos rápido
+  here,        # rutas relativas del proyecto
+  sf,          # lectura y manipulación de objetos espaciales vectoriales
+  httr,        # peticiones HTTP REST (consulta servicio Mapa Geológico)
+  geojsonsf,   # GeoJSON ↔ sf rápido (geojson_sf)
+  dplyr,       # gramática de datos: mutate, select, joins
+  tidyr,       # ✗ (no usado; pivot, unnest…)
+  stringr,     # utilidades de texto y regex
+  purrr,       # programación funcional: map*, walk*
+  broom,       # ✗ (no usado; tidy de modelos)
+  readr,       # lectura/escritura rápida de CSV
+  ggdist,      # distribuciones y ‘raincloud’/histinterval
+  scales,      # transformaciones y breaks de ejes
+  ggplot2,     # visualización de datos
+  patchwork,   # combinación de gráficos ggplot
+  wesanderson, # paletas continuas y discretas
+  qs           # ✗ (no usado; serialización rápida .qs)
 )
 
 #Paleta de colores
@@ -55,6 +54,7 @@ library(rgee)
 library(googledrive)
 
 # ==== Autenticación y backend Python ====
+# Se fuerzan credenciales limpias para evitar colisiones de proyectos GEE entre sesiones
 ee_clean_user_credentials()      # Limpia credenciales de GEE
 ee_clean_pyenv()           # Limpia variables de entorno de reticulate
 reticulate::py_run_string("import ee; ee.Authenticate()")
@@ -81,9 +81,9 @@ img$get("keywords")$getInfo()
 
 ## 1. Carga de datos vectoriales
 
-**Carga de datos de pedodiversidad de UCS**
+### 1.1 Carga de datos de pedodiversidad de UCS
 
-Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo. Estos se utilizan acá para derivar las covariables a nivel de polígono de UCS.
+Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo. Estos se utilizan acá para derivar las covariables a nivel de polígono de UCS. Por tal razón, solo se importan variables que no tengan NAs.
 
 ```{r carga_pedodiversidad}
 
@@ -104,7 +104,108 @@ ggplot(data = ucs_rao_sf) +
   theme(legend.position = "none") 
 ```
 
-**Armonización**
+### 1.2 Carga de datos de unidades geológicas SGC
+
+Las unidades geológicas son un insumo que se utilizará posteriormente para los modelos jerárquicos. Estos datos se cargan via API del servicio de ArcGIS que usa el Servicio Geológico Colombiano. No requieren token.
+
+```{r geologia_descarga_reclasificacion}
+
+# Se desagrega la url básica en sus componentes
+url <- httr::parse_url("https://srvags.sgc.gov.co/arcgis/rest/services/Mapa_Geologico_Colombia/Mapa_Geologico_Colombia_V2023/MapServer")
+
+layer_id <- "733"
+
+url$path <- paste(url$path, layer_id, "query", sep = "/")
+
+# Se agregan componentes a la URL para solicitud de información
+url$query <- list(where = "1=1", # para recuperar todos los features
+                  outFields = "*", #para recuperar todos los campos
+                  returnGeometry = "true", #retorna geometrias
+                  f = "geojson") #retorna formato geojson
+
+# Se construye la url
+url_solicitud <- httr::build_url(url)
+
+# Para recuperar los datos espaciales se usa la librería sf
+respuesta <- httr::GET(url_solicitud)
+
+#Se examina la respuesta
+print(respuesta)
+
+# Descarga del mapa geológico 1 : 500 000 y clasificación de unidades por era (más joven)
+geo_sf_wgs84 <- sf::st_read(url_solicitud) |>
+  sf::st_make_valid() |>
+  mutate(
+    # LIMPIEZA -----------------------------------------------------------------
+    edad_limpia = Edad %>% 
+      str_replace_all("\\?", "") %>%    # quita “?”
+      str_trim() %>%                    # quita espacios extremos
+      str_squish(),                     # colapsa espacios múltiples
+    
+    # RECLASIFICACIÓN POR ERA (la MÁS JOVEN domina) ----------------------------
+    era_geo = case_when(
+      # 1) CENOZOICO  ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "paleoceno|eoceno|oligoceno|mioceno|plioceno|pleistoceno|holoceno|
+         aquitaniano|burdigaliano|langhiano|serravaliano|tortoniano|messiniano|
+         zancliano|rupeliano|thanetiano|lutetiano|bartoniano|priaboniano|
+         selandiano|daniense|chattiano",
+        ignore_case = TRUE)
+      ) ~ "Cenozoico",
+      
+      # 2) MESOZOICO  ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "triásico|jurásico|cretácico|berriasiano|valanginiano|barremiano|
+         aptiano|albiano|cenomaniano|turoniano|coniaciano|santoniano|
+         campaniano|maastrichtiano",
+        ignore_case = TRUE)
+      ) ~ "Mesozoico",
+      
+      # 3) PALEOZOICO ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "cámbrico|ordovícico|silúrico|devónico|mississipiano|pridoliano|
+         carbonífero|pennsylvaniano|pérmico",
+        ignore_case = TRUE)
+      ) ~ "Paleozoico",
+      
+      # 4) PROTEROZOICO --------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "sideriano|rhyaciano|orosiriano|statheriano|calymmiano|ectasiano|
+         steniano|toniano|criogénico|ediacariano|mesoproterozoico|
+         neoproterozoico|proterozoico",
+        ignore_case = TRUE)
+      ) ~ "Proterozoico",
+      
+      # 5) SIN DATO ------------------------------------------------------------
+      TRUE ~ "Sin_dato"
+    )
+  ) |>
+  select(descripcion_geo = Descripcion, era_geo)
+
+
+
+#Se visualizan datos geográficamente (edad, sin leyenda)
+p_mapa_geo <- ggplot2::ggplot(geo_sf_wgs84) +
+  geom_sf(aes(fill = era_geo), color = NA) +
+  scale_fill_manual(
+    name   = "Era geológica",                         # (1) título de la leyenda
+    breaks = c("Cenozoico", "Mesozoico",              # (3) orden joven → antiguo
+               "Paleozoico", "Proterozoico", "Sin_dato"),
+    values = c(                                       # (2) colores por categoría
+      Cenozoico   = "#f8ea1e",
+      Mesozoico   = "#5bc5ea",
+      Paleozoico  = "#a9c6a8",
+      Proterozoico= "#ea5173",
+      Sin_dato    = "gray90"
+    ),
+    drop = FALSE                                      # muestra todas las clases aunque falten
+  ) +
+  theme_minimal()
+
+p_mapa_geo
+```
+
+### 1.3 Armonización con GEE
 
 Se definen parámetros de extensión, CRS y resolución para armonizar los datos de GEE con con los datos de pedodiversidad de UCS. Para la definición del área de recorte se toma un buffer sobre el objeto de sf. Esto amortiguará posteriormente efectos de borde en el cálculo de la diversidad. No se recomienda enviar el objeto completo y hacer el buffer en GEE, dado que el envío de un ubjeto con numerosos multipoligonos (como es el caso) es prohibitivo en GEE. Los envios no pueden superar 10MB por tarea.
 
@@ -138,11 +239,11 @@ bbox_ee <- ee$Geometry$Rectangle(
 
 ## 2. Derivación de variables raster en GEE
 
-A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original pero se exportan a 50m de resolución.
+A continuación se calculan los índices geomorfométricos e hidroclimáticos. Primero se declaran los objetos raster y se visualizan para verificar. Todos los raster se visualizan en su resolución original.
 
 ### 2.1 DEM
 
-El gradiente de elevación o la variabilidad de la elevación pueden contribuir al desarrollo de la pedodiversidad.
+Se define el objeto raster de elevación y se visualiza su extensión.
 
 ```{r extraccion_dem}
 
@@ -199,7 +300,7 @@ eeextra <- import("ee_extra", convert = FALSE)
 reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-461718-g2')")
 
 # Ejecuta el análisis de terreno (devuelve un ee$Image con múltiples bandas)
-dem_attr <- tagee$terrainAnalysis(dem)
+dem_attr <- tagee$terrainAnalysis(dem_clip)
 
 # Extrae la banda de Curvatura Vertical
 vc_clip <- dem_attr$select("VerticalCurvature")$clip(bbox_ee)
@@ -220,84 +321,161 @@ Map$addLayer(
 
 ### 2.4 Temperatura superficial
 
-La temperatura superficial se obtiene a partir de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se obitene en unidades de ... se transforma...\
-\
+La temperatura superficial se obtiene a partir de la banda 10 de imágenes de Landsat 8, las cuales tienen resolución de 100m. Se toma una serie de tiempo de 10 años: de 2013 a 2023. Se derivan dos conjuntos de datos:
+
+-   El CV temporal es un proxy de **variabilidad climática en el tiempo**, pixel a pixel, en un período de 10 años.
+
 **Coeficiente de variación temporal de LST** (por píxel, °C)
 
-Este bloque calcula el CV temporal por pixel para toda la colección. Se transforma a °C antes de calcular CV
+Se usa la colección para extraer estadísticas **temporales por píxel**, como promedio, desviación estándar o coeficiente de variación (CV). Se transforma a °C antes de calcular las estadísticas. El coeficiente de variación obtenido por pixel representa la variabilidad de la temperatura en el tiempo para cada coordenada. El promedio de los CVs se promedia luego para cada polígono.
 
 ```{r}
-lst_collection_temporal <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
+
+# Colección de L8 LST convertida a °C
+lst_collection <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
   filterBounds(bbox_ee)$
   filterDate("2013-01-01", "2023-01-01")$
   map(function(img) {
     img$select("ST_B10")$
-      multiply(0.00341802)$
-      add(149.0)$
-      subtract(273.15)$
+      multiply(0.00341802)$          # escala
+      add(149.0)$                    # offset
+      subtract(273.15)$              # K → °C
       rename("lst_celsius")
   })
 
-# Calcula imagen de CV temporal: stdDev / mean
-lst_mean  <- lst_collection_temporal$mean()$rename("lst_celsius_mean")
-lst_std   <- lst_collection_temporal$reduce(ee$Reducer$stdDev())$rename("lst_celsius_sd")
-lst_cv_temporal <- lst_std$divide(lst_mean)$rename("lst_cv_temporal")
+# ── CV TEMPORAL POR PÍXEL ────────────────────────────────────────────────
+lst_temp_mean <- lst_collection$mean()$rename("lst_temp_mean")
+lst_temp_sd   <- lst_collection$reduce(ee$Reducer$stdDev())$rename("lst_temp_sd")
+lst_temp_cv   <- lst_temp_sd$divide(lst_temp_mean)$rename("lst_temp_cv")
 
-# Visualización del CV temporal
+# Verificación visual en el visor de Earth Engine
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
-  lst_cv_temporal,
-  visParams = list(min = 0, max = 0.3, palette = c("blue", "orange", "red")),
-  name = "CV temporal de LST (°C)"
+  lst_temp_cv, 
+  list(min = 0, max = 0.3, palette = c("blue","orange","red")),
+  "LST CV temporal"
 )
 ```
 
-**Coeficiente de variación espacial de LST**
+**Media espacial de LST**
 
-Este bloque genera una imagen mediana (promedio espacial) de LST para todo el periodo, con conversión a grados Celsius y visualización
+En este bloque se calcula la **media espacial** de la colección ya corregida (cada píxel representa la temperatura mediana en 10 años). Es un resumen central espacial, complementario al CV, que representa condiciones térmicas típicas en cada lugar.
 
 ```{r}
-lst_img_mediana <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
+
+
+# Colección de L8 LST convertida a °C
+lst_collection <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
   filterBounds(bbox_ee)$
   filterDate("2013-01-01", "2023-01-01")$
   map(function(img) {
-    # Aplica escala y offset, y convierte a Celsius
     img$select("ST_B10")$
-      multiply(0.00341802)$
-      add(149.0)$
-      subtract(273.15)$
+      multiply(0.00341802)$          # escala
+      add(149.0)$                    # offset
+      subtract(273.15)$              # K → °C
       rename("lst_celsius")
-  })$
-  median()$
-  rename("lst_celsius")
+  })
 
-# Visualización en el visor de Earth Engine
+# ── (2) MEDIA ESPACIAL (PROMEDIO) POR PÍXEL ──────────────────────────────────
+lst_media_espacial <- lst_collection$mean()$rename("lst_media_espacial")
+
+# Verificación visual en el visor de Earth Engine
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
-  lst_img_mediana,
-  visParams = list(min = 10, max = 45, palette = c("blue", "white", "red")),
-  name = "LST mediana (espacial, °C)"
+  lst_media_espacial, 
+  list(min = 10, max = 45, palette = c("blue","white","red")),
+  "LST media (°C)"
 )
 
 
+```
+
+### 2.5 Precipitación
+
+**CV temporal de la precipitación (CHIRPS, 2013-2023)**
+
+Para cuantificar cuán irregular es la lluvia a lo largo del año, tomamos la base diaria CHIRPS (0,05° ≈ 5 km) y la agregamos a totales mensuales por píxel. Sobre los 132 meses resultantes (enero 2013 – diciembre 2023) calculamos, para cada celda, la media y la desviación estándar mensual y derivamos el coeficiente de variación (CV = sd / media). El mapa final resalta los lugares donde la precipitación mensual es más variable: valores altos indican regímenes pluviales muy irregulares, mientras que valores bajos corresponden a climas con lluvias más estables en el tiempo. Al promediar este CV dentro de cada UCS obtendremos una medida de variabilidad climática propia de cada polígono.
+
+```{r}
+
+# Colección diaria recortada
+chirps_daily <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
+  filterBounds(bbox_ee)$
+  filterDate("2013-01-01", "2023-01-01")
+
+# ── Agregación mensual (mm por mes) ──────────────────────────────────────────
+chirps_monthly_ic <- ee$ImageCollection(
+  ee$List$sequence(2013, 2023)$map(ee_utils_pyfunc(function(y) {
+    ee$List$sequence(1, 12)$map(ee_utils_pyfunc(function(m) {
+      start <- ee$Date$fromYMD(y, m, 1)
+      end   <- start$advance(1, "month")
+      chirps_daily$
+        filterDate(start, end)$
+        sum()$                         # mm del mes
+        clip(bbox_ee)$
+        set("system:time_start", start)
+    }))
+  }))$flatten()
+)
+
+# ── (1) CV TEMPORAL POR PÍXEL (mensual) ─────────────────────────────────────
+precip_mean_temp <- chirps_monthly_ic$mean()$rename("precip_mean_temp")
+precip_sd_temp   <- chirps_monthly_ic$reduce(ee$Reducer$stdDev())$rename("precip_sd_temp")
+precip_cv_temp   <- precip_sd_temp$divide(precip_mean_temp)$rename("precip_cv_temp")
+
+# Verificación visual en el visor de Earth Engine
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
+Map$addLayer(
+  precip_cv_temp,
+  list(min = 0, max = 1, palette = c("blue","orange","red")),
+  "Precip CV temporal (mensual)"
+)
+
+```
+
+**Precipitación media espacial (CHIRPS, 2013-2023)**
+
+A partir de la misma serie diaria CHIRPS calculamos el promedio diario de precipitación para todo el periodo 2013-2023. Esta operación produce, por píxel, la lluvia media (mm día⁻¹) representativa de la última década. Al reducir esta capa sobre los polígonos de suelo obtenemos, para cada UCS, un indicador sencillo de disponibilidad hídrica promedio que servirá como covariable en los modelos de pedodiversidad.
+
+```{r}
+
+# Colección diaria recortada
+chirps_daily <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
+  filterBounds(bbox_ee)$
+  filterDate("2013-01-01", "2023-01-01")
+
+# ── (2) MEDIA ESPACIAL POR PÍXEL (mm/día) ───────────────────────────────────
+precip_media_espacial <- chirps_daily$mean()$rename("precip_media_espacial")
+
+# Verificación visual en el visor de Earth Engine
+Map$setCenter(lon = -74, lat = 4, zoom = 5)
+Map$addLayer(
+  precip_media_espacial,
+  list(min = 0, max = 15, palette = c("blue","white","red")),
+  "Precip media espacial (mm/día)"
+)
 ```
 
 ## 3. Extracción de métricas
 
-La función se encuentra en un script externo. Esta ...
+Falta texto coherence: La función se encuentra en un script externo.... rgee para la extracción. ...los raster se muestrean a 50m si su resolución es mas fina, lo cual equivale a escala 1:100.000. Si la resolución es mas gruesa, se utiliza la que esté disponible.
 
-...los raster se muestrean a 50m si su resolución es mas fina, lo cual equivale a escala 1:100.000. Si la resolución es mas gruesa, se utiliza la que esté disponible.
+```{r exporta_covariables_poligonos}
 
-```{r}
-
+# Extrae estadísticas (mean / sd) por UCS y las envía a Drive en lotes adaptativos
 source(here::here("Scripts", "00_funcion_procesamiento_lotes_imagen.R"), encoding = "UTF-8")
 
 registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_idx = 1, max_index = 43384, variable_name = "DEM", scale = 50)
 
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_img_mediana, start_idx = 29831, max_index = 30478, batch_s = 50, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
+registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media_espacial, start_idx = 25294, max_index = 25593, batch_s = 50, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
 
-registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_cv_temporal, start_idx = 4206, max_index = 4355, batch_s = 20, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
+registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_temp_cv, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
 
+registro_precip_cv_temporal <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_cv_temp, start_idx = 1, max_index = nrow(ucs_sf_4326), batch_s = 300, reduce_batch_by = 3, variable_name  = "PRECIP_cv_temporal", scale = 500)
+
+registro_precip_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_media_espacial, start_idx = 1, max_index = 43384, batch_s = 300,   reduce_batch_by = 3, variable_name  = "PRECIP_media_espacial", scale = 500)
 
 
 ```
@@ -308,6 +486,7 @@ El código a continuación lee todos los .csv de una propiedad (por ejemplo, "sl
 
 ```{r reubicar_googledrive}
 
+# Copia local de archivos combinados para reproducibilidad offline
 combinar_y_subir_csv <- function(propiedad,
                                  carpeta_drive_id_origen = "17yxwhlpgL4EG8inI5u8Nwi08wOrnhJiM",  # GEE_exports
                                  carpeta_drive_id_destino = "1qJ5S25TZaFWzueNhx1M4Gr3P8JYWKGeU",  # Proyecto
@@ -373,7 +552,7 @@ combinar_y_subir_csv <- function(propiedad,
 
 Aplica la función para las covariables. Esto se corre solo una vez, para combinar los csv por lotes.
 
-```{r}
+```{r aplica_funcion_combinacion}
 
 combinar_y_subir_csv("DEM")
 
@@ -381,64 +560,168 @@ combinar_y_subir_csv("SLOPE")
 
 combinar_y_subir_csv("LST_cv_temporal")
 
-combinar_y_subir_csv("LST_media_espacial")
+combinar_y_subir_csv("LST_media_espacial") #falta
+
+combinar_y_subir_csv("precip_cv_temporal")
+
+combinar_y_subir_csv("precip_media_espacial") #falta
+
+
 ```
 
 Se cargan y se convierte geometria de geojson a sf
 
 ```{r}
 
+# === DEM (elevación media y variabilidad espacial) ===
 
 # Ruta al CSV combinado
 dem_cv <- read_csv(here::here("Data", "OUT_covars_csv","OUT_DEM_combinado.csv" ))
 
-# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
-dem_cv_sf <- st_as_sf(
-  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)), #convierte a sf
-  crs = 4326) |>
-  select(-.geo) |> #elimina columna de geometria obsoleta
-  mutate(
-      dem_cv = stdDev / mean, #calcula coeficiente de variación
-      log_dem_cv = log(dem_cv + 1), #calcula log de coeficiente de variación
-      dem_cv_dens = dem_cv/AREA_HA, #calcula la densidad del coeficiente de variación
-      log_dem_cv_dens = log(dem_cv_dens + 1) 
+# Convierte columna .geo (GeoJSON) a geometría válida y calcula métricas
+covars_dem  <- st_as_sf(
+  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)),
+  crs = 4326
   ) |>
-rename(dem_mean = mean, dem_stdDev = stdDev)
-
-
-# Ruta al CSV combinado
-slope_cv <- read_csv(here::here("Data", "OUT_covars_csv","OUT_SLOPE_combinado.csv" ))
-
-# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
-slope_cv_sf <- st_as_sf(
-  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), #convierte a sf
-  crs = 4326) |>
-  select(-.geo) |> #elimina columna de geometria obsoleta
   mutate(
-      slope_cv = stdDev / mean, #calcula coeficiente de variación
-      log_slope_cv = log(slope_cv + 1), #calcula log de coeficiente de variación
-      slope_cv_dens = slope_cv/AREA_HA, #calcula la densidad del coeficiente de variación
-      log_slope_cv_dens = log(slope_cv_dens + 1) 
+    dem_cv = stdDev / mean,                   # coeficiente de variación
+    log_dem_cv = log(dem_cv + 1),             # log-transformación
+    dem_cv_dens = dem_cv / AREA_HA,           # CV densificado por área
+    log_dem_cv_dens = log(dem_cv_dens + 1),    # log densificado
+    # Estandarizadas
+    dem_cv_z = scale(dem_cv)[, 1],
+    log_dem_cv_z = scale(log_dem_cv)[, 1],
+    dem_cv_dens_z = scale(dem_cv_dens)[, 1],
+    log_dem_cv_dens_z = scale(log_dem_cv_dens)[, 1],
+    dem_mean_z = scale(mean)[, 1]
+    ) |>
+  rename(dem_mean = mean) |>
+    select(-.geo, -stdDev) |>
+
+
+# === SLOPE (pendiente media y su variabilidad espacial) ===
+
+slope_cv <- read_csv(here::here("Data", "OUT_covars_csv", "OUT_SLOPE_combinado.csv"))
+
+covars_slope <- st_as_sf(
+  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)),
+  crs = 4326
   ) |>
-rename(slope_mean = mean, slope_stdDev = stdDev)
-
-
-# Ruta al CSV combinado
-lst_cv_temp <- read_csv(here::here("Data", "OUT_covars_csv","OUT_LST_cv_temporal_combinado.csv" ))
-
-# Convierte geometría desde .geo (GeoJSON como texto) a objeto sf
-lst_cv_temporal_sf <- st_as_sf(
-  data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), #convierte a sf
-  crs = 4326) |>
-  select(-.geo) |> #elimina columna de geometria obsoleta
   mutate(
-    log_lst_mean_temporal_cv = log(mean + 1),
-    lst_mean_temporal_cv_dens = mean/AREA_HA, #densidad de media de CV 
-    log_lst_mean_temporal_cv_dens = log(lst_mean_temporal_cv_dens + 1)
-    )|>
-rename(lst_mean_temporal_cv = mean, lst_stdDev_temporal_cv = stdDev)
+    slope_cv = stdDev / mean,
+    log_slope_cv = log(slope_cv + 1),
+    slope_cv_dens = slope_cv / AREA_HA,
+    log_slope_cv_dens = log(slope_cv_dens + 1),
+    # Estandarizadas
+    slope_cv_z = scale(slope_cv)[, 1],
+    log_slope_cv_z = scale(log_slope_cv)[, 1],
+    slope_cv_dens_z = scale(slope_cv_dens)[, 1],
+    log_slope_cv_dens_z = scale(log_slope_cv_dens)[, 1],
+    slope_mean_z = scale(mean)[, 1]
+    ) |>
+  rename(slope_mean = mean) |>
+  select(-.geo, -stdDev)
+
+
+# === LST media espacial (media de 2013-2023 por píxel, luego agregada) =====
+
+lst_media_esp <- read_csv(
+  here::here("Data", "OUT_covars_csv", "OUT_LST_media_espacial_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_lst_media <- st_as_sf(
+  data.frame(lst_mean_esp, geometry = geojson_sf(lst_mean_esp$.geo)),
+  crs = 4326
+  ) |>
+  mutate(
+    log_lst_mean = log(mean + 1),
+    lst_mean_dens       = mean / AREA_HA,
+    log_lst_mean_dens   = log(lst_mean_dens + 1),
+    # Estandarizadas
+    lst_mean_z          = scale(mean)[, 1],
+    log_lst_mean_z      = scale(log_lst_mean)[, 1],
+    lst_mean_dens_z     = scale(lst_mean_dens)[, 1],
+    log_lst_mean_dens_z = scale(log_lst_mean_dens)[, 1]
+  ) |>
+  rename(lst_mean = mean) |>
+  select(-.geo, -stdDev)
+
+
+# === LST CV temporal (media de CV temporal por píxel, luego agregada por polígono) ===
+
+lst_cv_temp <- read_csv(here::here("Data", "OUT_covars_csv", "OUT_LST_cv_temporal_combinado.csv"))
+
+covars_lst_cv_temp <- st_as_sf(
+  data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)),
+  crs = 4326
+  ) |>
+  mutate(
+    log_lst_cv_temp = log(mean + 1), #mean es el promedio de las cv de la serie de tiempo para un polígono
+    lst_cv_temp_dens = mean / AREA_HA,
+    log_lst_cv_temp_dens = log(lst_cv_temp_dens + 1),
+    # Estandarizadas
+    lst_cv_temp_z = scale(mean)[, 1],
+    log_lst_cv_temp_z = scale(log_lst_cv_temp)[, 1],
+    lst_cv_temp_dens_z = scale(lst_cv_temp_dens)[, 1],
+    log_lst_cv_temp_dens_z = scale(log_lst_cv_temp_dens)[, 1]
+  ) |>
+  rename(
+    lst_cv_temp = mean,
+  ) |>
+  select(-.geo, -stdDev)
+
+# === Precipitación CV temporal mensual (CHIRPS 2013-2023) ====================
+
+precip_cv_temp <- read_csv(
+  here::here("Data", "OUT_covars_csv", "OUT_PRECIP_cv_temporal_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_precip_cv_temp <- st_as_sf(
+  data.frame(precip_cv_temp, geometry = geojson_sf(precip_cv_temp$.geo)),
+  crs = 4326
+  ) |>
+  mutate(
+    log_precip_cv_temp        = log(mean + 1),
+    precip_cv_temp_dens       = mean / AREA_HA,
+    log_precip_cv_temp_dens   = log(precip_cv_temp_dens + 1),
+    # Estandarizadas
+    precip_cv_temp_z          = scale(mean)[, 1],
+    log_precip_cv_temp_z      = scale(log_precip_cv_temp)[, 1],
+    precip_cv_temp_dens_z     = scale(precip_cv_temp_dens)[, 1],
+    log_precip_cv_temp_dens_z = scale(log_precip_cv_temp_dens)[, 1]
+  ) |>
+  rename(precip_cv_temp = mean) |>
+  select(-.geo, -stdDev)
+
+# === Precipitación media espacial (2013-2023, mm) =======================
+
+precip_mean_esp <- read_csv(
+  here::here("Data", "OUT_covars_csv", "OUT_precip_mediana_espacial_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_precip_mean <- st_as_sf(
+  data.frame(precip_mean_esp, geometry = geojson_sf(precip_mean_esp$.geo)),
+  crs = 4326
+  ) |>
+  mutate(
+    log_precip_mean        = log(mean + 1),
+    precip_mean_dens       = mean / AREA_HA,
+    log_precip_mean_dens   = log(precip_mean_dens + 1),
+    # Estandarizadas
+    precip_mean_z          = scale(mean)[, 1],
+    log_precip_mean_z      = scale(log_precip_mean)[, 1],
+    precip_mean_dens_z     = scale(precip_mean_dens)[, 1],
+    log_precip_mean_dens_z = scale(log_precip_mean_dens)[, 1]
+  ) |>
+  rename(precip_mean = mean) |>
+  select(-.geo, -stdDev)
 
 ```
+
+Para asegurar la continuidad espacial de los análisis, se verifican NAs 
 
 ## 4. EDA covariables
 
@@ -446,33 +729,32 @@ Ya que `dem_cv_sf`, `slope_cv_sf` y `ucs_rao_sf` comparten `id_creado` como iden
 
 ```{r}
 
-# Extraer solo columnas útiles de dem y slope
-dem_df <- dem_cv_sf |> 
-  st_drop_geometry() |>
-  select(-system.index)
+# Elimina la columna de indices creada por GEE
+dem_sf <- covars_dem |> select(-system.index)
+slope_sf <- covars_slope |>  select(-system.index)
+lst_cv_sf <- covars_lst_cv_temp
+lst_med_sf <-
+precip_cv_sf <-
+precip_med_sf <-
 
-slope_df <- slope_cv_sf |> 
-  st_drop_geometry() |>
-  select(-system.index)
-
-lst_temporal_df <- lst_cv_temporal_sf |> 
-  st_drop_geometry() |>
-  select(-system.index)
-
-# Unir las coordenadas con los data frames de covariables
+# Unir a la tabla base
 modelo_df <- ucs_rao_sf |>
+  mutate(
+    #Q = if_else(Q == 0, 1e-3, Q),               # evitar log(0)
+    Qdens = Q / AREA_HA,                        # diversidad por unidad de área
+    log_Qdens = log(Qdens + 1),                     # log-transformación
+    log_Qdens01 = (log_Qdens - min(log_Qdens)) / 
+                  (max(log_Qdens) - min(log_Qdens)) # escalado entre 0–1
+  ) |>
   left_join(
     dem_df,
     by = c("id_creado", "AREA_HA", "UCSuelo")
   ) |>
-  left_join(
-    slope_df,
-    by = c("id_creado", "AREA_HA", "UCSuelo")
-  ) |>
-  left_join(
-    lst_temporal_df,
-    by = c("id_creado", "AREA_HA", "UCSuelo")
-  )
+  left_join(slope_sf |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo"))|>
+  left_join(lst_cv_sf  |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo")) |>
+  left_join(lst_med_sf |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo")) |>
+  left_join(precip_cv_sf |> st_drop_geometry(),  by = c("id_creado", "AREA_HA", "UCSuelo")) |>
+  left_join(precip_med_sf |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
   
 
 ```
@@ -502,14 +784,12 @@ p_log_slope_cv_dens <- ggplot(modelo_df, aes(log_slope_cv_dens)) +
 
 p_log_slope_cv_dens
 
-
 p_mosaico_distr_slope <- p_slope_mean + p_log_slope_cv + p_log_slope_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
 ```
 
 Se verifican visualmente las distribuciones de las covariables para DEM
 
 ```{r}
-
 p_dem_mean <- ggplot(modelo_df, aes(dem_mean)) +
   ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
   geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
@@ -532,48 +812,12 @@ p_log_dem_cv_dens <- ggplot(modelo_df, aes(log_dem_cv_dens)) +
 
 p_log_dem_cv_dens
 
-p_log_dem_cv_dens <- ggplot(modelo_df, aes(log_dem_cv_dens)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  labs(title = "Distribución de log densidad CV de DEM", y = "Frecuencia", x = "Log media de DEM")
-
-p_log_lst_mean_cv_dens
-
 p_mosaico_distr_DEM <- p_dem_mean + p_log_dem_cv + p_log_dem_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
-```
-
-Se visualizan las distribuciones para LST con coeficiente de variación temporal
-
-```{r}
-
-p_lst_mean_cv <- ggplot(modelo_df, aes(lst_mean_temporal_cv)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  labs(title = "Distribución de CV media de LST)", y = "Frecuencia", x = "CV media de LST")
-
-p_lst_mean_cv
-
-p_log_lst_mean_cv <- ggplot(modelo_df, aes(log_lst_mean_temporal_cv)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  labs(title = "Distribución de log(CV media de LST)", y = "Frecuencia", x = "Log de CV media de LST")
-
-p_log_lst_mean_cv
-
-p_log_lst_mean_cv_dens <- ggplot(modelo_df, aes(log_lst_mean_temporal_cv_dens)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  labs(title = "Distribución de log(densidad de CV media de LST)", y = "Frecuencia", x = "Log de densidad CV media de LST")
-
-p_log_lst_mean_cv_dens
-
-p_mosaico_distr_LST_temp <- p_log_lst_mean_cv + p_log_lst_mean_cv_dens + plot_layout(ncol = 3, widths = c(1, 1))
 ```
 
 Visualización espacial de las covariables
 
 ```{r}
-
 p_mapa_dem_mean <- ggplot(modelo_df |> filter(dem_mean >=0)) +
   geom_sf(aes(fill = dem_mean), color = NA) +
   scale_fill_gradientn(colours = pal, na.value = "white") + 
@@ -641,30 +885,6 @@ p_mapa_log_slope_cv_dens <- ggplot(modelo_df) +
   theme_minimal()
 
 p_mapa_log_slope_cv_dens
-
-p_mapa_lst_mean_cv_dens <- ggplot(modelo_df) +
-  geom_sf(aes(fill = lst_mean_temporal_cv_dens), color = NA) +
-  scale_fill_gradientn(colours = pal, na.value = "white") + 
-  labs(title = "Mapa de log(densidad de medai de CV de LST)", fill = "Densidad CV") +
-  theme_minimal()
-
-p_mapa_lst_mean_cv_dens
-
-
-p_mapa_log_lst_mean_cv_dens <- modelo_df |>
-  mutate(lst_cv_dens_plus1 = lst_mean_temporal_cv_dens + 1) |>
-  ggplot() +
-  geom_sf(aes(fill = lst_cv_dens_plus1), color = NA) +
-  scale_fill_gradientn(
-    colours = pal,
-    na.value = "white",
-    trans = "log10",
-    breaks = scales::trans_breaks("log10", function(x) 10^x)
-  ) +
-  labs(title = "Mapa de log(densidad de media de CV de LST)", fill = "Densidad CV") +
-  theme_minimal()
-
-p_mapa_log_lst_mean_cv_dens
 
 p_mapas_covs <- p_mapa_dem_mean + p_mapa_slope_mean + p_mapa_log_dem_cv + p_mapa_log_slope_cv + p_mapa_log_dem_cv_dens + p_mapa_log_slope_cv_dens+ plot_layout(ncol = 2, widths = c(1, 1))
 

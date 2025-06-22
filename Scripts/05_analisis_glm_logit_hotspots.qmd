@@ -247,11 +247,11 @@ modelo_df_balanceado <- modelo_df_completo |>
 
 ## 3. Modelado
 
-Se corre un modelo GLM binomial para explicar los hotspots. 
+Se corre un modelo GLM binomial para explicar los hotspots.
 
 Este bloque ajusta dos modelos binomiales:
 
-### 3.1  Usando hotspots (95%) vs coldspots (5%)
+### 3.1 Usando hotspots (95%) vs coldspots (5%)
 
 ```{r ajuste_modelos_logit_A}
 
@@ -280,12 +280,12 @@ performance::r2_tjur(glm_hot_cold)
 
 **Modelo A** presentó síntomas claros de *separación perfecta* (perfect separation), como:
 
-* Coeficientes extremadamente grandes.
-* Errores estándar exorbitantes (\>20,000).
-* R² de Tjur = 1.0 (indicador de sobreajuste extremo).
-* Máximo número de iteraciones sin convergencia robusta.
+-   Coeficientes extremadamente grandes.
+-   Errores estándar exorbitantes (\>20,000).
+-   R² de Tjur = 1.0 (indicador de sobreajuste extremo).
+-   Máximo número de iteraciones sin convergencia robusta.
 
-### 3.2  Usando hotspots (95%) vs muestra aleatoria balanceada de no-hotspots
+### 3.2 Usando hotspots (95%) vs muestra aleatoria balanceada de no-hotspots
 
 ```{r ajuste_modelos_logit_B}
 
@@ -312,11 +312,11 @@ performance::r2_tjur(glm_hot_bal)
 
 En contraste, el modelo B mostró:
 
-* Estabilidad numérica adecuada.
-* Coeficientes significativos para algunas variables clave.
-* R² de Tjur = 0.812 (alto, pero plausible).
+-   Estabilidad numérica adecuada.
+-   Coeficientes significativos para algunas variables clave.
+-   R² de Tjur = 0.812 (alto, pero plausible).
 
-El *modelo B es preferido por su robustez, interpretabilidad y aplicabilidad predictiva.** En adelante, nos enfocaremos en describir gráficamente sus efectos, residuales y predicciones espaciales.
+El \*modelo B es preferido por su robustez, interpretabilidad y aplicabilidad predictiva.\*\* En adelante, nos enfocaremos en describir gráficamente sus efectos, residuales y predicciones espaciales.
 
 ## 4. Visualización de resultados
 
@@ -507,8 +507,8 @@ Para ello, se aplica el índice de Moran I, que mide la autocorrelación espacia
 
 Usaremos:
 
-* Centroides de UCS, para definir la posición espacial.
-* Vecinos por k-vecinos más cercanos (por ejemplo k = 6), que garantiza conectividad y es estable en cuanto a escala.
+-   Centroides de UCS, para definir la posición espacial.
+-   Vecinos por k-vecinos más cercanos (por ejemplo k = 6), que garantiza conectividad y es estable en cuanto a escala.
 
 Se usa la vecindad por distancia pues estamos analizando los residuos de un modelo logit, que fue ajustado sobre un subconjunto. Este subconjunto no cubre el espacio completo ni garantiza contigüidad, y muchas UCS seleccionadas no son vecinas entre sí.
 
@@ -535,9 +535,10 @@ print(moran_global)
 
 
 ```
-Moran's I > 0: indica autocorrelación espacial positiva en los residuos: valores similares (altos o bajos) tienden a agruparse espacialmente.
 
-Z-score elevado y p-valor < 0.001: este patrón es estadísticamente significativo y no aleatorio.
+Moran's I \> 0: indica autocorrelación espacial positiva en los residuos: valores similares (altos o bajos) tienden a agruparse espacialmente.
+
+Z-score elevado y p-valor \< 0.001: este patrón es estadísticamente significativo y no aleatorio.
 
 Magnitud de I: aunque el valor absoluto (≈ 0.06) no es alto, es suficiente para rechazar la hipótesis nula de aleatoriedad espacial.
 
@@ -547,9 +548,9 @@ Hay información espacial residual: zonas donde el modelo sobrepredice o subpred
 
 Esto puede deberse a:
 
-* Covariables espaciales faltantes o mal representadas.
-* Efectos espaciales latentes (estructura de paisaje, geología, clima).
-* Posible efecto MAUP (problemas por escala y forma de unidades espaciales).
+-   Covariables espaciales faltantes o mal representadas.
+-   Efectos espaciales latentes (estructura de paisaje, geología, clima).
+-   Posible efecto MAUP (problemas por escala y forma de unidades espaciales).
 
 Dado este resultado, se justifica implementar modelos espaciales explícitos, como modelos bayesianos con estructuras CAR o SAR (INLA, brms).
 
