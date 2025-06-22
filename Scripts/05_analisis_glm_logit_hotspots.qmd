@@ -26,11 +26,18 @@ pacman::p_load(
   scales,       # transformación de escalas (log10, percentiles, breaks)
   ggplot2,      # sistema de gráficos base
   sjPlot,       # visualización de modelos y efectos marginales
+  spdep,        # Análisis de dependencia espacial
+  scales,       # Transformación de escalas
   paletteer,    # acceso a múltiples paletas de colores (ej. viridis, wesanderson)
   googledrive,  # autenticación y manipulación de archivos en Google Drive
   patchwork,    # combinación de gráficos ggplot (p1 + p2)
   qs            # guardado y carga rápida de objetos R
 )
+
+#Paleta de colores
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+col_hot  <- pal[90] 
 
 # Ajusta tamaño base de letra para todos los gráficos
 theme(base_size = 14)
@@ -325,7 +332,9 @@ p_coeficientes <- plot_model(glm_hot_bal,
                              show.values = TRUE, 
                              transform = NULL,
                              value.offset = .3) +
-  labs(title = "Coeficientes estimados del modelo B")
+  labs(title = "Coeficientes estimados del modelo") +
+  theme_sjplot2() +
+  scale_color_sjplot("blambus")
 
 p_coeficientes
 
@@ -333,7 +342,7 @@ p_coeficientes
 ggsave(here("Figures", "coeficientes_logit_b.png"),
        plot = p_coeficientes,
        width = 6,
-       height = 5,
+       height = 3,
        dpi = 350)
 
 ```
@@ -346,19 +355,19 @@ Estas curvas muestran cómo varía la probabilidad predicha de hotspot a medida 
 
 # log_dem_cv_dens_z: log(CV de elevación densificado por área), estandarizado
 p_margin_log_dem_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_dem_cv_dens_z [all]", title = NULL) +
-  labs(x = "log(CV de elevación, densificado y estándar)",
+  labs(x = "log(CV de DEM, densificado y estándar)",
        y = "Probabilidad predicha de hotspot") +
   theme_minimal()
 
 # log_slope_cv_dens_z: log(CV de pendiente densificado por área), estandarizado
 p_margin_log_slope_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_slope_cv_dens_z [all]", title = NULL) +
-  labs(x = "log(CV de pendiente, densificado y estándar)",
+  labs(x = "log(CV de SLOPE, densificado y estándar)",
        y = "Probabilidad predicha de hotspot") +
   theme_minimal()
 
 # log_lst_cv_temp_dens_z: log(CV de temperatura superficial densificado por área), estandarizado
 p_margin_log_lst_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_lst_cv_temp_dens_z [all]", title = NULL) +
-  labs(x = "log(CV temporal de temperatura superficial, densificado y estándar)",
+  labs(x = "log(CV temporal de LST, densificado y estándar)",
        y = "Probabilidad predicha de hotspot") +
   theme_minimal()
 
@@ -371,16 +380,28 @@ p_curvas_marginales_logit_b
 # Guarda la figura
 ggsave(here("Figures", "curvas_marginales_modelo_logit_b.png"),
        plot = p_curvas_marginales_logit_b,
-       width = 12,
-       height = 5,
+       width = 9,
+       height = 4,
        dpi = 350)
 
 
 ```
 
+### 4.3 Residuales
 
+El análisis de los residuales del modelo logit permite evaluar qué tan bien se ajusta el modelo a los datos observados. En modelos GLM (como el logit), los residuales no deben interpretarse igual que en regresiones lineales clásicas, pero siguen siendo cruciales para detectar mal ajuste, patrones no explicados o estructura espacial remanente.
 
-Chequeo de residuales (escribir lo que se espera de esto... que los residuales tengan x forma significa ...)
+Existen distintos tipos de residuales en modelos binomiales:
+
+Residuos de respuesta (response): diferencia entre el valor observado (0/1) y la probabilidad predicha.
+
+Residuos de Pearson: estandarizados respecto a la varianza esperada bajo el modelo. Útiles para detectar outliers.
+
+Residuos deviance: basados en la función de verosimilitud. Informan sobre la contribución de cada observación al deviance total.
+
+En este caso usamos residuos de tipo response, los más directos para interpretar y visualizar espacialmente.
+
+Un residuo de +1 indica que el modelo predijo 0 pero el valor real fue 1 (hotspot observado, no predicho), mientras que un valor de -1 significa que el modelo predijo un hotspot donde no lo había. Valores cercanos a 0 indican buen ajuste.
 
 ```{r}
 
@@ -412,31 +433,223 @@ ggsave(here("Figures", "mosaico_residuales_logit.png"),
        dpi = 350)
 ```
 
-Mapas de predicción y residuo (explicar lo que significa la probabilidad que retorna el modelo)
+En esta sección mostramos tres mapas clave para interpretar el modelo logístico:
+
+Hotspots observados: zonas donde la diversidad densificada supera el percentil 95. Sirve como referencia empírica para evaluar el modelo.
+
+Probabilidad predicha de hotspot: valores continuos entre 0 y 1 generados por el modelo. Una alta probabilidad indica que el modelo espera un hotspot allí.
+
+Residuos del modelo: diferencia entre observación y predicción. Permiten identificar zonas donde el modelo sobrestima o subestima la probabilidad de hotspot.
+
+La comparación visual entre estas capas permite detectar áreas donde el modelo falla sistemáticamente o donde hay alta incertidumbre, lo que justifica el análisis espacial posterior.
 
 ```{r}
 
+# Extrae los hotspots observados como puntos
+hotspots_obs_sf <- modelo_df_balanceado |> 
+  filter(log_Qdens_hot95 == 1)
+
+# Mapa 1: solo hotspots observados como puntos, UCS en fondo
+p_mapa_obs <- ggplot() +
+  geom_sf(data = modelo_df_balanceado, fill = NA, color = "grey90", size = 0.1) +
+  geom_sf(data = hotspots_obs_sf, color = col_hot, size = 2) +
+  labs(title = "Hotspots observados (puntos)") +
+  theme_minimal()
+
+# Mapa 2: probabilidad predicha
 p_mapa_pred <- ggplot(modelo_df_balanceado) +
   geom_sf(aes(fill = prob_hot_bal), color = NA) +
-  scale_fill_viridis_c(option = "viridis", na.value = "white") +
-  labs(title = "Mapa: probabilidad predicha de hotspot", fill = "Probabilidad") +
+  scale_fill_gradientn(
+  colours = rev(viridis::plasma(100)),  # ← rev() invierte los colores
+  limits = c(0, 0.6),
+  oob = scales::squish,
+  name = "Probabilidad\npredicha"
+  ) +
+  labs(title = "Probabilidad predicha de hotspot") +
   theme_minimal()
 
+# Mapa 3: residuales
 p_mapa_resid <- ggplot(modelo_df_balanceado) +
   geom_sf(aes(fill = resid_hot_bal), color = NA) +
-  scale_fill_viridis_c(option = "plasma", na.value = "white") +
-  labs(title = "Mapa: residuales del modelo", fill = "Residuo") +
+  scale_fill_gradientn(
+    colours = viridis::viridis(100),
+    limits = c(-0.5, 0.5),
+    name = "Residuo"
+  ) +
+  labs(title = "Residuales del modelo") +
   theme_minimal()
 
-p_mapas_logit <- p_mapa_pred + p_mapa_resid
+# Mosaico con patchwork
+p_mapas_logit <- p_mapa_obs + p_mapa_pred + p_mapa_resid + plot_layout(ncol = 3)
 
+# Guardar la figura
+ggsave(
+  filename = here("Figures", "mosaico_mapa_prediccion_logit.png"),
+  plot = p_mapas_logit,
+  width = 12,
+  height = 5.5,
+  dpi = 350
+)
 
-#guarda el último gráfico generado
-ggsave(here("Figures", "mosaico_mapa_prediccion_logit.png"),
-       plot = p_mapas_logit,
-       width = 10,
-       height = 6,
-       dpi = 350)
 ```
 
+## 5.Autocorrelación espacial de los residuales (Moran I)
 
+A continuación, se evalúa si los residuales del modelo logit presentan autocorrelación espacial, es decir, si las discrepancias entre predicciones y observaciones tienden a agruparse espacialmente. Esta evaluación permite responder preguntas como:
+
+¿Hay zonas del territorio donde el modelo falla sistemáticamente?
+
+¿Podría haber variables omitidas con estructura espacial?
+
+¿Los errores del modelo son aleatorios o siguen patrones regionales?
+
+Para ello, se aplica el índice de Moran I, que mide la autocorrelación espacial global entre los valores de una variable (en este caso, los residuales) y su distribución geográfica.
+
+Usaremos:
+
+* Centroides de UCS, para definir la posición espacial.
+* Vecinos por k-vecinos más cercanos (por ejemplo k = 6), que garantiza conectividad y es estable en cuanto a escala.
+
+Se usa la vecindad por distancia pues estamos analizando los residuos de un modelo logit, que fue ajustado sobre un subconjunto. Este subconjunto no cubre el espacio completo ni garantiza contigüidad, y muchas UCS seleccionadas no son vecinas entre sí.
+
+```{r analisis_moran_I}
+
+# Usamos los centroides de los UCS para definir relaciones espaciales
+modelo_centroides <- modelo_df_balanceado |> 
+  st_centroid(of_largest_polygon = TRUE)
+
+# Extraemos coordenadas de los centroides
+coords <- st_coordinates(modelo_centroides)
+
+# Construye vecinos por k más cercanos (k=6 es común en análisis ecológicos y espaciales)
+k_vecinos <- knearneigh(coords, k = 6)
+vecindario <- knn2nb(k_vecinos)
+
+# Matriz de pesos espacial estandarizada (filas suman 1)
+pesos <- nb2listw(vecindario, style = "W", zero.policy = TRUE)
+
+# Moran I global sobre residuales del modelo logit
+moran_global <- moran.test(modelo_df_balanceado$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+
+print(moran_global)
+
+
+```
+Moran's I > 0: indica autocorrelación espacial positiva en los residuos: valores similares (altos o bajos) tienden a agruparse espacialmente.
+
+Z-score elevado y p-valor < 0.001: este patrón es estadísticamente significativo y no aleatorio.
+
+Magnitud de I: aunque el valor absoluto (≈ 0.06) no es alto, es suficiente para rechazar la hipótesis nula de aleatoriedad espacial.
+
+El modelo no captura completamente la estructura espacial de los hotspots de pedodiversidad.
+
+Hay información espacial residual: zonas donde el modelo sobrepredice o subpredice de forma agrupada.
+
+Esto puede deberse a:
+
+* Covariables espaciales faltantes o mal representadas.
+* Efectos espaciales latentes (estructura de paisaje, geología, clima).
+* Posible efecto MAUP (problemas por escala y forma de unidades espaciales).
+
+Dado este resultado, se justifica implementar modelos espaciales explícitos, como modelos bayesianos con estructuras CAR o SAR (INLA, brms).
+
+```{r}
+
+# Moran local (LISA)
+moran_local <- localmoran(modelo_df_balanceado$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+
+# Calcula el lag espacial de los residuos (para el scatterplot)
+modelo_df_balanceado <- modelo_df_balanceado |>
+  mutate(
+    local_moran_I = moran_local[, 1],
+    p_valor_local = moran_local[, 5],
+    lag_resid = lag.listw(pesos, resid_hot_bal)
+  )
+
+# Clasifica tipo de agrupamiento espacial
+modelo_df_balanceado <- modelo_df_balanceado |>
+  mutate(
+    cluster_tipo = case_when(
+      resid_hot_bal > 0 & lag_resid > 0 ~ "High-High",
+      resid_hot_bal < 0 & lag_resid < 0 ~ "Low-Low",
+      resid_hot_bal > 0 & lag_resid < 0 ~ "High-Low",
+      resid_hot_bal < 0 & lag_resid > 0 ~ "Low-High",
+      TRUE ~ "No significativo"
+    ),
+    cluster_tipo = ifelse(p_valor_local > 0.05, "No significativo", cluster_tipo)
+  )
+
+```
+
+La figura a continuación resume la estructura espacial de los residuales del modelo, evaluando si existen patrones de agrupamiento no explicados por las covariables:
+
+Diagrama de dispersión de Moran local (izquierda): muestra la relación entre cada residuo y el promedio de sus vecinos (lag espacial). Cada punto está coloreado según el tipo de agrupamiento LISA (e.g., High-High, Low-Low). La pendiente indica el grado de autocorrelación local.
+
+Mapa de agrupamientos LISA (centro): clasifica cada unidad en cinco categorías según la combinación de su residuo y el de sus vecinos. Ayuda a identificar zonas con agrupamiento significativo de errores (e.g., agrupaciones de sobrepredicción).
+
+Mapa del estadístico local (Ii) (derecha): representa la magnitud del valor de autocorrelación local, sin categorizarlo. Útil para detectar valores extremos y la intensidad del patrón espacial.
+
+```{r}
+
+# Define colores personalizados desde paleta Zissou1 (viridis-like)
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+colores_lisa <- c(
+  "High-High"        = pal[90],   # rojo intenso
+  "Low-Low"          = pal[10],   # azul oscuro
+  "High-Low"         = pal[70],   # naranja
+  "Low-High"         = pal[30],   # celeste
+  "No significativo" = "grey90"   # gris neutro
+)
+
+# Gráfico 1: Scatterplot de Moran local coloreado por tipo de agrupamiento
+p_scatter_lisa <- ggplot(modelo_df_balanceado, aes(x = resid_hot_bal, y = lag_resid)) +
+  geom_point(aes(color = cluster_tipo), alpha = 0.8, size = 1.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey60") +
+  scale_color_manual(values = colores_lisa) +
+  labs(
+    title = "Diagrama de dispersión Moran local",
+    x = "Residuo del modelo",
+    y = "Lag espacial",
+    color = "Tipo de agrupamiento"
+  ) +
+  theme_minimal()
+
+# Gráfico 2: Mapa LISA de agrupamientos espaciales
+p_moran_lisa <- ggplot(modelo_df_balanceado) +
+  geom_sf(aes(fill = cluster_tipo), color = NA) +
+  scale_fill_manual(values = colores_lisa, na.value = "white") +
+  labs(title = "Mapa: agrupamientos LISA (residuales)",
+       fill = "Tipo de agrupamiento") +
+  theme_minimal()
+
+# Gráfico 3: Mapa de valores Ii (magnitude de autocorrelación local)
+p_ii_mapa <- ggplot(modelo_df_balanceado) +
+  geom_sf(aes(fill = local_moran_I), color = NA) +
+  scale_fill_viridis_c(name = "Ii", option = "magma", direction = -1) +
+  labs(title = "Mapa: valor del estadístico local (Ii)") +
+  theme_minimal()
+
+# Composición de los tres gráficos
+p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa + 
+  plot_layout(ncol = 3)
+
+# Mostrar y guardar
+print(p_lisa_tripanel)
+
+ggsave(
+  here::here("Figures", "moran_local_composicion_logit.png"),
+  plot = p_lisa_tripanel,
+  width = 15,
+  height = 5,
+  dpi = 300
+)
+
+```
+
+En este contexto, un Low-Low indica un conjunto de unidades cartográficas de suelo (UCS) cuyos residuos son consistentemente negativos, y además están rodeadas por otras UCS con residuos negativos, de manera significativa.
+
+Esto sugiere una subpredicción sistemática en esa zona: es decir, el modelo está prediciendo probabilidades más bajas de hotspot que las que realmente se observan.
+
+En resumen: los agrupamientos Low-Low son zonas donde el modelo tiende a subestimar la probabilidad de hotspots, y esa subestimación no es aleatoria sino espacialmente agrupada.
