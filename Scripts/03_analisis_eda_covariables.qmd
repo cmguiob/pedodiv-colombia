@@ -333,14 +333,15 @@ Se usa la colección para extraer estadísticas **temporales por píxel**, como 
 
 # Colección de L8 LST convertida a °C
 lst_collection <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
-  filterBounds(bbox_ee)$
+  filterBounds(bbox_ee)$            #descarta las imágenes cuyo footprint no toca tu bbox_ee
   filterDate("2013-01-01", "2023-01-01")$
   map(function(img) {
     img$select("ST_B10")$
       multiply(0.00341802)$          # escala
       add(149.0)$                    # offset
       subtract(273.15)$              # K → °C
-      rename("lst_celsius")
+      rename("lst_celsius")$
+      clip(bbox_ee)                  # recorte geométrico
   })
 
 # ── CV TEMPORAL POR PÍXEL ────────────────────────────────────────────────
@@ -366,14 +367,15 @@ En este bloque se calcula la **media espacial** de la colección ya corregida (c
 
 # Colección de L8 LST convertida a °C
 lst_collection <- ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
-  filterBounds(bbox_ee)$
+  filterBounds(bbox_ee)$            #descarta las imágenes cuyo footprint no toca tu bbox_ee
   filterDate("2013-01-01", "2023-01-01")$
   map(function(img) {
     img$select("ST_B10")$
       multiply(0.00341802)$          # escala
       add(149.0)$                    # offset
       subtract(273.15)$              # K → °C
-      rename("lst_celsius")
+      rename("lst_celsius")$
+      clip(bbox_ee)          # recorte geométrico
   })
 
 # ── (2) MEDIA ESPACIAL (PROMEDIO) POR PÍXEL ──────────────────────────────────
@@ -400,7 +402,7 @@ Para cuantificar cuán irregular es la lluvia a lo largo del año, tomamos la ba
 
 # Colección diaria recortada
 chirps_daily <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
-  filterBounds(bbox_ee)$
+  filterBounds(bbox_ee)$  #descarta las imágenes cuyo footprint no toca tu bbox_ee
   filterDate("2013-01-01", "2023-01-01")
 
 # ── Agregación mensual (mm por mes) ──────────────────────────────────────────
@@ -441,11 +443,14 @@ A partir de la misma serie diaria CHIRPS calculamos el promedio diario de precip
 
 # Colección diaria recortada
 chirps_daily <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
-  filterBounds(bbox_ee)$
+  filterBounds(bbox_ee)$ # descarta las imágenes cuyo footprint no toca tu bbox_ee
   filterDate("2013-01-01", "2023-01-01")
 
 # ── (2) MEDIA ESPACIAL POR PÍXEL (mm/día) ───────────────────────────────────
-precip_media_espacial <- chirps_daily$mean()$rename("precip_media_espacial")
+precip_media_espacial <- chirps_daily$
+  mean()$
+  rename("precip_media_espacial")$
+  clip(bbox_ee)          # recorte geométrico
 
 # Verificación visual en el visor de Earth Engine
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
@@ -469,9 +474,9 @@ registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_
 
 registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media_espacial, start_idx = 25294, max_index = 25593, batch_s = 50, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
+registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_media_espacial, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 50)
 
-registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_temp_cv, start_idx = 1, max_index = 43384, batch_s = 200, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
+registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = lst_temp_cv, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 50)
 
 registro_precip_cv_temporal <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_cv_temp, start_idx = 1, max_index = nrow(ucs_sf_4326), batch_s = 300, reduce_batch_by = 3, variable_name  = "PRECIP_cv_temporal", scale = 500)
 
@@ -721,7 +726,72 @@ covars_precip_mean <- st_as_sf(
 
 ```
 
-Para asegurar la continuidad espacial de los análisis, se verifican NAs 
+Para asegurar la continuidad espacial de los análisis, se verifican los intervalos incompletos entre 1 y 43384. El script llamará a `procesamiento_lotes_imagen()` sólo sobre los intervalos faltantes, conservando la lógica de lotes adaptativos.
+
+```{r}
+
+# FUNCIÓN utilitaria que  detecta filas faltantes y las agrupa en intervalos
+ids_faltantes_por_intervalo <- function(id_vector,
+                                        id_total = 1:43384) {
+
+  faltantes <- setdiff(id_total, id_vector) |> sort()
+  if (length(faltantes) == 0)
+    return(tibble::tibble(start_idx = integer(), end_idx = integer()))
+
+  # agrupa contiguos
+  cortes <- c(1, which(diff(faltantes) > 1) + 1, length(faltantes) + 1)
+  tibble::tibble(
+    start_idx = faltantes[cortes[-length(cortes)]],
+    end_idx   = faltantes[cortes[-1] - 1]
+  )
+}
+
+# LISTA de tablas sf ya cargadas (una por covariable)
+covars_list <- list(
+  DEM_mean_cv        = covars_dem,
+  SLOPE_mean_cv      = covars_slope,
+  LST_mean_spatial   = covars_lst_media,
+  LST_cv_temporal    = covars_lst_cv_temp,
+  PRECIP_mean_spatial= covars_precip_mean,
+  PRECIP_cv_temporal = covars_precip_cv_temp
+)
+
+# Verifica faltantes, imprime resumen y guarda intervalos
+intervalos_faltantes <- purrr::imap_dfr(
+  covars_list,
+  function(tbl, nombre) {
+    falt <- ids_faltantes_por_intervalo(tbl$id_creado)
+    dplyr::mutate(falt, variable = nombre, .before = 1)
+  }
+)
+
+print(intervalos_faltantes)
+
+# ---------------------------------------------------------------------------
+# Bucle para re-lanzar descargas sólo donde falte
+# ---------------------------------------------------------------------------
+
+intervalos_faltantes |> 
+  dplyr::filter(variable == "PRECIP_cv_temporal") |>        # elige la covariable
+  purrr::pwalk(function(variable, start_idx, end_idx) {
+
+    mensaje <- glue::glue("↻ Descargando {variable}: {start_idx}–{end_idx}")
+    message(mensaje)
+
+    procesamiento_lotes_imagen(
+      sf_data     = ucs_sf_4326,
+      image       = precip_cv_temp,        # ajustar para cada imagen
+      start_idx   = start_idx,
+      max_index   = end_idx,
+      batch_s     = 50,
+      reduce_batch_by = 3,
+      variable_name  = variable,
+      scale       = 500                     # ajustar para cada imagen
+    )
+  })
+
+```
+
 
 ## 4. EDA covariables
 
@@ -732,10 +802,10 @@ Ya que `dem_cv_sf`, `slope_cv_sf` y `ucs_rao_sf` comparten `id_creado` como iden
 # Elimina la columna de indices creada por GEE
 dem_sf <- covars_dem |> select(-system.index)
 slope_sf <- covars_slope |>  select(-system.index)
-lst_cv_sf <- covars_lst_cv_temp
-lst_med_sf <-
-precip_cv_sf <-
-precip_med_sf <-
+lst_cv_sf <- covars_lst_cv_temp |> select(-system.index)
+lst_med_sf <- covars_lst_media |> select(-system.index)
+precip_cv_sf <- covars_precip_cv_temp |> select(-system.index)
+precip_med_sf <- covars_precip_cv_temp |> select(-system.index)
 
 # Unir a la tabla base
 modelo_df <- ucs_rao_sf |>
@@ -746,11 +816,8 @@ modelo_df <- ucs_rao_sf |>
     log_Qdens01 = (log_Qdens - min(log_Qdens)) / 
                   (max(log_Qdens) - min(log_Qdens)) # escalado entre 0–1
   ) |>
-  left_join(
-    dem_df,
-    by = c("id_creado", "AREA_HA", "UCSuelo")
-  ) |>
-  left_join(slope_sf |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo"))|>
+  left_join(dem_sf |> st_drop_geometry(),        by = c("id_creado", "AREA_HA", "UCSuelo")) |>
+  left_join(slope_sf |> st_drop_geometry(),      by = c("id_creado", "AREA_HA", "UCSuelo")) |>
   left_join(lst_cv_sf  |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo")) |>
   left_join(lst_med_sf |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo")) |>
   left_join(precip_cv_sf |> st_drop_geometry(),  by = c("id_creado", "AREA_HA", "UCSuelo")) |>
