@@ -139,9 +139,13 @@ geo_sf_wgs84 <- sf::st_read(url_solicitud) |>
   mutate(
     # LIMPIEZA -----------------------------------------------------------------
     edad_limpia = Edad %>% 
-      str_replace_all("\\?", "") %>%    # quita “?”
-      str_trim() %>%                    # quita espacios extremos
-      str_squish(),                     # colapsa espacios múltiples
+      str_replace_all("\\?", "") |>            # quita “?”
+      str_trim() |>                              # quita espacios extremos
+      str_to_lower() |>                         # pasa a minúsculas
+      stringi::stri_trans_general("Latin-ASCII") |> # quita acentos
+      str_replace_all(pattern = "-", replacement = " ") |> 
+      str_squish(),                               # colapsa espacios múltiples
+      
     
     # RECLASIFICACIÓN POR ERA (la MÁS JOVEN domina) ----------------------------
     era_geo = case_when(
@@ -150,38 +154,39 @@ geo_sf_wgs84 <- sf::st_read(url_solicitud) |>
         "paleoceno|eoceno|oligoceno|mioceno|plioceno|pleistoceno|holoceno|
          aquitaniano|burdigaliano|langhiano|serravaliano|tortoniano|messiniano|
          zancliano|rupeliano|thanetiano|lutetiano|bartoniano|priaboniano|
-         selandiano|daniense|chattiano",
+         selandiano|daniense|chattiano|cuaternario|mesiniano",
         ignore_case = TRUE)
-      ) ~ "Cenozoico",
+      ) ~ "Cz",
       
       # 2) MESOZOICO  ----------------------------------------------------------
       str_detect(edad_limpia, regex(
-        "triásico|jurásico|cretácico|berriasiano|valanginiano|barremiano|
+        "triasico|jurasico|cretacico|berriasiano|valanginiano|barremiano|
          aptiano|albiano|cenomaniano|turoniano|coniaciano|santoniano|
          campaniano|maastrichtiano",
         ignore_case = TRUE)
-      ) ~ "Mesozoico",
+      ) ~ "Mz",
       
       # 3) PALEOZOICO ----------------------------------------------------------
       str_detect(edad_limpia, regex(
-        "cámbrico|ordovícico|silúrico|devónico|mississipiano|pridoliano|
-         carbonífero|pennsylvaniano|pérmico",
-        ignore_case = TRUE)
-      ) ~ "Paleozoico",
+      "\\bcambrico\\b|\\bordovicico\\b|\\bsilurico\\b|\\bdevonico\\b|
+       \\bmississipiano\\b|\\bpridoliano\\b|\\bcarbonifero\\b|
+       \\bpennsylvaniano\\b|\\bpermico\\b|\\bpaleozoico\\b",
+      ignore_case = TRUE
+      )) ~ "Pz",
       
       # 4) PROTEROZOICO --------------------------------------------------------
       str_detect(edad_limpia, regex(
         "sideriano|rhyaciano|orosiriano|statheriano|calymmiano|ectasiano|
-         steniano|toniano|criogénico|ediacariano|mesoproterozoico|
+         steniano|toniano|criogenico|ediacariano|mesoproterozoico|
          neoproterozoico|proterozoico",
         ignore_case = TRUE)
-      ) ~ "Proterozoico",
+      ) ~ "Ptz",
       
       # 5) SIN DATO ------------------------------------------------------------
-      TRUE ~ "Sin_dato"
+      TRUE ~ "NA"
     )
   ) |>
-  select(descripcion_geo = Descripcion, era_geo)
+  select(descripcion_geo = Descripcion, era_geo, edad_limpia)
 
 
 
@@ -189,19 +194,32 @@ geo_sf_wgs84 <- sf::st_read(url_solicitud) |>
 p_mapa_geo <- ggplot2::ggplot(geo_sf_wgs84) +
   geom_sf(aes(fill = era_geo), color = NA) +
   scale_fill_manual(
-    name   = "Era geológica",                         # (1) título de la leyenda
-    breaks = c("Cenozoico", "Mesozoico",              # (3) orden joven → antiguo
-               "Paleozoico", "Proterozoico", "Sin_dato"),
-    values = c(                                       # (2) colores por categoría
-      Cenozoico   = "#f8ea1e",
-      Mesozoico   = "#5bc5ea",
-      Paleozoico  = "#a9c6a8",
-      Proterozoico= "#ea5173",
-      Sin_dato    = "gray90"
+    breaks = c("Cz", "Mz", "Pz", "Ptz", "Sin_dato"),
+    values = c(
+      Cz    = "#f8ea1e",
+      Mz    = "#5bc5ea",
+      Pz   = "#a9c6a8",
+      Ptz = "#ea5173",
+      'NA'     = "gray95"
     ),
-    drop = FALSE                                      # muestra todas las clases aunque falten
+    drop = FALSE
   ) +
-  theme_minimal()
+  guides(fill = guide_legend(label.position = "top")) +
+  coord_sf(expand = FALSE) +
+  scale_x_continuous(breaks = seq(from = -82, to = -66, by = 4)) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title = element_text(size = 10, hjust = 0.5),
+    axis.title = element_blank(),
+    legend.position = "top",                  # parte superior
+    legend.justification = "center",          # centrado
+    legend.direction = "horizontal",          # orientación horizontal
+    legend.key.size = unit(0.4, "cm"),
+    legend.text = element_text(size = 8),
+    legend.title = element_blank(),           # in título (refuerzo)
+    panel.background = element_rect(fill = "gray95", color = NA),
+    panel.border = element_rect(color = "gray95", fill = NA, linewidth = 0.5)
+  )
 
 p_mapa_geo
 ```
@@ -880,8 +898,11 @@ map_mag <- function(data, var, pal, titulo, leyenda){
       name = leyenda
       ) +
     labs(title = titulo) +
+    coord_sf(expand = FALSE) +
+    scale_x_continuous(breaks = seq(from = -79, to = -70, by = 3)) +
     theme_minimal() + 
-    theme(legend.justification = c("right", "top"))
+    theme(legend.justification = c("right", "top"),
+          plot.title = element_text(size = 10, hjust = 0.5))  # centrado y tamaño menor)
 }
 
 map_cv <- function(data, var, pal, titulo){
@@ -891,7 +912,7 @@ map_cv <- function(data, var, pal, titulo){
       colours = pal,
       trans   = "log10", # usa escala log-10 para contrastar valores bajos y altos de CV
       breaks  = scales::trans_breaks("log10", function(x) 10^x),
-      labels  = scales::label_number(accuracy = .001),
+       labels  = scales::label_scientific(digits = 1),
       na.value = "white",
       guide   = guide_colourbar(
         direction      = "vertical",
@@ -902,8 +923,11 @@ map_cv <- function(data, var, pal, titulo){
       name    = "CV"
     ) +
     labs(title = titulo) +
+    coord_sf(expand = FALSE) +
+    scale_x_continuous(breaks = seq(from = -79, to = -70, by = 3)) +
     theme_minimal() + 
-    theme(legend.justification = c("right", "top"))
+    theme(legend.justification = c("right", "top"),
+          plot.title = element_text(size = 10, hjust = 0.5))  # centrado y tamaño menor)
 }
 
 ##############################################################################
@@ -930,8 +954,21 @@ p_prec_cv  <- map_cv(modelo_df, precip_cv_temp,pal_prec_cv,  "CV de precipitaci�
 
 # Mosaico 4 × 2   (fila superior = magnitud, inferior = CV)
 
-p_mosaico <- (p_dem_mean | p_slope_mean | p_lst_mean | p_prec_mean) /
-             (p_dem_cv   | p_slope_cv   | p_lst_cv   | p_prec_cv  )
+# 1. Definir grilla explícita
+layout <- area(
+  t = c(1, 1, 1, 1, 1, 2, 2, 2, 2, 2),
+  l = c(1, 2, 3, 4, 5, 1, 2, 3, 4, 5),
+  b = c(1, 1, 1, 1, 1, 2, 2, 2, 2, 2),
+  r = c(1, 2, 3, 4, 5, 1, 2, 3, 4, 5)
+)
+
+# 2. Usar un espacio vacío real en posición (5, 2)
+espacio_vacio <- ggplot() + theme_void()
+
+# 3. Componer el mosaico
+p_mosaico <- p_dem_mean + p_slope_mean + p_lst_mean + p_prec_mean + p_mapa_geo +
+             p_dem_cv   + p_slope_cv   + p_lst_cv   + p_prec_cv   + espacio_vacio +
+             plot_layout(design = layout)
 
 ggsave(
   here::here("Figures", "mosaico_mapa_covariables.png"),
