@@ -27,13 +27,11 @@ pacman::p_load(char = c(
   "scales", #escalas
   "ggforce", #transformaciones especiales
   "patchwork", #mosaicos gráficos
-  "wesanderson", #paleta de colores
+  "paletteer", #paleta de colores
   "qs" #escribir y leer rápidamente objetos R
   )
 )
 
-#Paleta de colores
-pal <- wes_palette("Zissou1", 100, type = "continuous")
 
 # Ajusta tamaño de letra para todo e lscript
 theme(base_size = 14)
@@ -46,10 +44,15 @@ Los datos producto del procesamiento, se han subido a un repositorio de Zenodo.
 
 ```{r carga}
 
-# Corre script externo
-source(here::here("Scripts", "carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+# Corre script externo para cargar
+source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
-head(ucs_rao_sf)
+# Asignación de id único para cada polígono
+ucs_rao_sf <- ucs_rao_sf |> 
+  sf::st_make_valid() |> #valida geometrias problemáticas
+  dplyr::select(id_creado, UCSuelo, AREA_HA, Q) 
+
+ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
 ```
 
@@ -61,9 +64,9 @@ Se realiza análisis descriptivo para:
 -   Identificar la relación con las áreas de unidades cartográficas, para definir necesidades de normalización, derivación de nuevas variables (e.g. residuales) y metodologías de análisis de patrones de puntos.
 -   Identificar relaciones potenciales con otras variables.
 
-### 3.1 Distribución de la diversidad (Q), del área (A) y su relación
+### 2.1 Distribución de la diversidad (Q), del área (A) y su relación
 
-Para comparar diferentes formas de la variable, se crean nuevas variables que combinan Q, A y transformada logarítmica.
+Para comparar diferentes formas de la variable, se crean nuevas variables que combinan Q, A y varias transformadas.
 
 ```{r variable}
 
@@ -71,9 +74,13 @@ Para comparar diferentes formas de la variable, se crean nuevas variables que co
 ucs_rao_sf <- ucs_rao_sf |>
   tidyr::drop_na(Q) |>
   # se deja un mínimo diferente de cero para trabajar con logaritmos
-  dplyr::mutate(Q = case_when(Q == 0 ~ 0.001, TRUE ~ Q),
-                Qdens = Q/AREA_HA,
-                log_Qdens = log(Qdens + 1)) #para evitar log 0
+  mutate(
+    Q = if_else(Q == 0, 1e-3, Q),              # Evita log(0)
+    Qdens = Q / AREA_HA,                       # Densidad de diversidad
+    Q_squared = Q^2,
+    log_A = log10(AREA_HA),
+    log_Qdens = log10(Qdens)
+    )
 
 ```
 
@@ -133,13 +140,6 @@ De acuerdo a esto, Log(Q/A) es la variable más adecuada para modelado, análisi
 Se calculan los límites de Tukey para cada una de las variables. Esto se usa luego para graficarlos en lso histogramas.
 
 ```{r}
-# Crear columnas transformadas
-ucs_rao_sf <- ucs_rao_sf |>
-  mutate(
-    Q_squared = Q^2,
-    log_A = log10(AREA_HA),
-    log_Qdens = log10(Qdens)
-  )
 
 # Tukey limits for Q
 q25_q <- quantile(ucs_rao_sf$Q, 0.25, na.rm = TRUE)
@@ -185,173 +185,222 @@ tukey_high_lqd <- q75_lqd + 1.5 * iqr_lqd
 
 ```
 
-A continuación se analiza la distribución de Q
+### 2.2 Visualización de distribuciones
+
+Para cada variable continua se construyen histogramas con barras azules y la curva de densidad re-escalada en amarillo. La barra negra horizontal y el punto central marcan el intervalo inter-cuartílico y la mediana, mientras que las líneas grises punteadas corresponden a los límites de Tukey para detección de valores atípicos. Este bloque permite evaluar asimetrías, colas largas y confirmar si son necesarias transformaciones (p. ej. log₁₀ o potencias) antes de la modelación.
+
 
 ```{r distribuciones}
 
-# Distribución de Q
-p_Q <- ggplot(ucs_rao_sf, aes(Q)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  geom_vline(xintercept = tukey_low_q,  linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = tukey_high_q, linetype = "dashed", color = "gray30") +
-  #geom_vline(aes(xintercept = quantile(Q, 0.95, na.rm = TRUE)), linetype = "dashed") alternativa q.95
-  labs(title = "Distribución de Q", y = "Frecuencia", x = "Q")
-  
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNCIÓN utilitaria  ▸ histo_resp()
+#   • variable (tidy-eval) a graficar
+#   • título y etiqueta eje-X
+#   • fences Tukey (inferior y superior)
+#   • opcional: transformar eje-X (p.e. scientific / comma)
+#   • opcional: binwidth o bins (si necesitas forzar uno)
+# Mantiene:
+#   – barras ggdist::stat_histinterval (.width = c(.5,.9))
+#   – densidad amarilla after_stat(scaled)
+#   – fences grises; tema minimal
+# ─────────────────────────────────────────────────────────────────────────────
+histo_resp <- function(df, var, title, xlab,
+                       fence_low, fence_hi,
+                       bins = NULL, binwidth = NULL,
+                       x_scale = NULL) {
 
-#Distribución de Q con escala de potencia
-p_Qpot <- ggplot(ucs_rao_sf, aes(x = Q_squared)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  geom_vline(xintercept = tukey_low_q2,  linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = tukey_high_q2, linetype = "dashed", color = "gray30") +
-  scale_x_continuous(trans = "identity", name = "Q") +
-  labs(title = expression("Distribución en escala " * Q^2), y = "Frecuencia")
+  g <- ggplot(df, aes({{ var }})) +
+    ggdist::stat_histinterval(
+      fill = "#56B4E9", colour = "black",
+      .width = c(0.5, 0.9),
+      bins = bins, binwidth = binwidth
+    ) +
+    geom_density(aes(y = after_stat(scaled)),
+                 colour = "#FFD700", linewidth = 0.8) +
+    geom_vline(xintercept = fence_low, linetype = "dashed", colour = "grey30") +
+    geom_vline(xintercept = fence_hi,  linetype = "dashed", colour = "grey30") +
+    labs(title = title, x = xlab, y = "Frecuencia") +
+    theme_minimal(base_size = 12)
 
-#Dsistribución de áreas
-p_A <- ggplot(ucs_rao_sf, aes(AREA_HA)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  geom_vline(xintercept = tukey_low_a,  linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = tukey_high_a, linetype = "dashed", color = "gray30") +
-  labs(title = "Distribución de A", y = "Frecuencia", x = "A (Ha)")
+  if (!is.null(x_scale)) g <- g + x_scale
+  g
+}
 
-#Distribución de áreas con escala de log10
-p_logA <- ggplot(ucs_rao_sf, aes(x = log_A)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black" , .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  geom_vline(xintercept = tukey_low_la,  linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = tukey_high_la, linetype = "dashed", color = "gray30") +
-  scale_x_continuous(
-    name = "A (Ha)",
-    breaks = trans_breaks("identity", function(x) x),
-    labels = label_comma()
-  ) +
-  labs(title = "Distribución de log(A)", y = "Frecuencia")
+# ── Histogramas ─────────────────────────────────────────────────────────────
+p_Q   <- histo_resp(ucs_rao_sf, Q,
+                    "Distribución de Q", "Q",
+                    tukey_low_q, tukey_high_q)
 
-#Distribución de Q/A
-p_Qdens <- ggplot(ucs_rao_sf, aes(Qdens)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black", .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  geom_vline(xintercept = tukey_low_qd,  linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = tukey_high_qd, linetype = "dashed", color = "gray30") +
-  labs(title = "Distribución de Q/A", y = "Frecuencia", x = "Q/A")
+p_Q2  <- histo_resp(ucs_rao_sf, Q_squared,
+                    expression("Distribución en escala " * Q^2), "Q",
+                    tukey_low_q2, tukey_high_q2)
 
-#Distribución de Q/ A con esala log10
-p_logQdens <- ggplot(ucs_rao_sf, aes(x = log_Qdens)) +
-  ggdist::stat_histinterval(fill = "#56B4E9", color = "black" , .width = c(0.5, 0.9)) +
-  geom_density(aes(y = after_stat(scaled)), color = "#FFD700", size = 0.8) +
-  geom_vline(xintercept = tukey_low_lqd,  linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = tukey_high_lqd, linetype = "dashed", color = "gray30") +
-  scale_x_continuous(
-    name = "Q/A",
-    breaks = trans_breaks("identity", function(x) x),
-    labels = label_scientific()
-  ) +
-  labs(title = "Distribución de log(Q/A)", y = "Frecuencia")
+p_A   <- histo_resp(ucs_rao_sf, AREA_HA,
+                    "Distribución de A", "A (ha)",
+                    tukey_low_a, tukey_high_a)
 
+p_logA <- histo_resp(
+  ucs_rao_sf, log_A,
+  expression("Distribución de log"[10] * "(A)"),       # ← título con subíndice
+  expression(log[10](A)),                              # ← eje X con subíndice
+  tukey_low_la, tukey_high_la,
+  x_scale = scale_x_continuous(
+    breaks = scales::trans_breaks("identity", identity),
+    labels = scales::label_comma()
+  )
+)
 
-# Exporta mosaico
-p_mosaico_Qdens <-  p_Q + p_Qpot + p_A + p_logA + p_Qdens + p_logQdens + plot_layout(ncol = 2, widths = c(1, 1))
+p_Qdens <- histo_resp(ucs_rao_sf, Qdens,
+                      "Distribución de Q/A", "Q/A",
+                      tukey_low_qd, tukey_high_qd)
 
-p_mosaico_Qdens
+p_logQdens <- histo_resp(
+  ucs_rao_sf, log_Qdens,
+  expression("Distribución de log"[10] * "(Q/A)"),     # ← título con subíndice
+  expression(log[10](Q/A)),                            # ← eje X con subíndice
+  tukey_low_lqd, tukey_high_lqd,
+  x_scale = scale_x_continuous(
+    breaks = scales::trans_breaks("identity", identity),
+    labels = scales::label_scientific()
+  )
+)
 
-#guarda el último gráfico generado
-ggsave(here("Figures","histogramas_Qdens.png"), width = 9, height = 9, dpi = 350)
+# ── Mosaico 3 × 2 (sin cambios de estructura) ───────────────────────────────
+p_mosaico_respuesta <- (p_Q | p_Q2) /
+                       (p_A | p_logA) /
+                       (p_Qdens | p_logQdens)
+
+ggsave(
+  here::here("Figures", "mosaico_histogramas_respuesta.png"),
+  plot   = p_mosaico_respuesta,
+  width  = 9, height = 9, dpi = 350
+)
+
+p_mosaico_respuesta
 
 ```
 
-### 3.2 Representación espacial de Q, A y Q/A
+
+### 2.3 Representación espacial de la variable respuesta
+
+El segundo bloque traslada la exploración al espacio. Cada panel muestra la magnitud o la variabilidad de la variable usando la paleta continua Zissou 1 (100 colores). Los mapas de magnitud se representan en escala lineal, mientras que los de variabilidad aplican transformaciones (log₁₀ o potencia 2) para resaltar gradientes. El objetivo es identificar patrones regionales—por ejemplo, cordilleras con valores altos de pendiente o cuencas con baja diversidad—que después guiarán los modelos espaciales.
 
 ```{r mapas}
 
-#Mapa simple de Q
-p_mapa_Q <- ggplot(ucs_rao_sf) +
-  geom_sf(aes(fill = Q), color = NA) +
-  scale_fill_gradientn(colours = pal, na.value = "white") + 
-  labs(title = "Mapa de Q", fill = "Q") +
-  theme_minimal()
+# 0· Paleta continua para todos los mapas --------------------------------------
 
-#Mapa  Q con escala potencia 2
-p_mapa_Qpot <- ggplot(ucs_rao_sf) +
-  geom_sf(aes(fill = Q), color = NA) +
-  scale_fill_gradientn(
-    colours = pal,
-    na.value = "white",
-    trans = ggforce::power_trans(2)  # This will apply Qdens^2 to the fill scale
-  ) +
-  labs(title = expression("Mapa en escala " * Q^2), fill = "Q") +
-  theme_minimal()
+pal_resp <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
 
-#Mapa simple de áreas
-#p_mapa_A <- ggplot(ucs_rao_sf) +
-#  geom_sf(aes(fill = AREA_HA), color = NA) +
-#  scale_fill_viridis_c() +
-#  labs(title = "Mapa de A", fill = "A (Ha)") +
-#  theme_minimal()
+# Función genérica de mapa ----------------------------------------------------
 
-#Mapa de áreas con escala log10
-#p_mapa_logA <- ggplot(ucs_rao_sf) +
-#  geom_sf(aes(fill = AREA_HA), color = NA) +
-#  scale_fill_viridis_c(trans = "log10") +
-#  labs(title = "Mapa de log(A)", fill = "A (Ha)") +
-#  theme_minimal()
+map_resp <- function(df, var, title_expr, legend_lab,
+                     trans      = "identity",
+                     breaks     = waiver(),
+                     labels_fn  = waiver()) {
 
-#Mapa de Q/A simple
-p_mapa_Qdens <- ggplot(ucs_rao_sf) +
-  geom_sf(aes(fill = Qdens), color = NA) +
-  scale_fill_gradientn(colours = pal, na.value = "white") + 
-  labs(title = "Mapa de Q/A", fill = "Q/A") +
-  theme_minimal()
+  ggplot(df) +
+    geom_sf(aes(fill = {{ var }}), colour = NA) +
+    scale_fill_gradientn(
+      colours  = pal_resp,
+      na.value = "white",
+      trans    = trans,
+      guide    = guide_colourbar(
+                  direction      = "vertical",
+                  barwidth       = unit(0.25, "cm"),
+                  barheight      = unit(3.5,  "cm"),
+                  title.position = "top"),
+      name     = legend_lab,
+      breaks   = breaks,
+      labels   = labels_fn
+    ) +
+    labs(title = title_expr) +
+    theme_minimal() +
+    theme(legend.justification = c("right", "top"))
+}
 
-#Mapa de Q/A en escala log1'
-p_mapa_logQdens <- ggplot(ucs_rao_sf) +
-  geom_sf(aes(fill = Qdens), color = NA) +
-  scale_fill_gradientn(
-    colours = pal,
-    na.value = "white",
-    trans = "log10",
-    breaks = scales::trans_breaks("log10", function(x) 10^x)
-  ) +
-  labs(title = "Mapa en escala log(Q/A)", fill = "Q/A") +
-  theme_minimal()
+# Cuatro mapas ----------------------------------------------------------------
 
-p_mapas_Qdens <- p_mapa_Q + p_mapa_Qpot+ p_mapa_Qdens + p_mapa_logQdens + plot_layout(ncol = 2, widths = c(1, 1))
+# 2-A  Q (lineal)
+p_map_Q <- map_resp(
+  ucs_rao_sf, Q,
+  "Mapa de Q", "Q"
+)
 
-p_mapas_Qdens
+# 2-B  Q²
+p_map_Q2 <- map_resp(
+  ucs_rao_sf, Q,
+  expression("Mapa en escala " * Q^2), "Q",
+  trans = ggforce::power_trans(2)          # Q²
+)
 
-#guarda el último gráfico generado
-ggsave(here("Figures","mapas_Qdens.png"), width = 8, height = 9, dpi = 350)
+# 2-C  Q/A (lineal)
+p_map_Qdens <- map_resp(
+  ucs_rao_sf, Qdens,
+  "Mapa de Q/A", "Q/A"
+)
+
+## cortes automáticos dentro del rango de Qdens
+# se toman 4 cortes log-espaciados (base-10) que caigan dentro del rango real
+rng_qd      <- range(ucs_rao_sf$Qdens, na.rm = TRUE)
+log_breaks  <- scales::log_breaks(n = 4)(rng_qd)   # vector de cortes en escala original
+
+p_map_logQdens <- map_resp(
+  ucs_rao_sf, Qdens,
+  expression("Mapa en escala log"[10] * "(Q/A)"), "Q/A",
+  trans     = "log10",
+  breaks    = log_breaks,
+  labels_fn = scales::label_scientific()
+)
+
+# Mosaico 2 × 2 y guardado -----------------------------------------------------
+
+p_mapas_respuesta <- (p_map_Q | p_map_Q2) /
+                     (p_map_Qdens | p_map_logQdens)
+
+ggsave(
+  here::here("Figures", "mapas_respuesta.png"),
+  plot   = p_mapas_respuesta,
+  width  = 8, height = 9, dpi = 350
+)
+
+#p_mapas_respuesta
+
 
 ```
 
-### 3.3 Cuantificar el efecto del área
+### 2.4 Cuantificar el efecto del área
 
-A continuación se observa la distribución del área. Esto permite entender si requiere transformación para estudiar su relación con la diversidad.
-
-Se observa la relación entre log(área) y pedodiversidad
+Finalmente se inspecciona la relación entre diversidad total ( Q ) y área de las unidades cartográficas. El primer gráfico utiliza las variables en escala original; el segundo emplea log₁₀ en ambos ejes para comprobar si la relación se lineariza y, en consecuencia, si un modelo log-log resulta más apropiado.
 
 ```{r dispersion}
 
-# Scatterplot Q vs área
-p_puntos_Qdens <- ggplot(ucs_rao_sf, aes(x = AREA_HA, y = Q)) +
-  geom_point(alpha = 0.5, color = "#56B4E9") +
-  labs(title = "Relación entre Q y A", x = "A (Ha)", y = "Q")
+# ── Scatterplot 1 · Q vs A (escala original) ────────────────────────────────
+p_puntos_Q_A <- ggplot(ucs_rao_sf,
+                       aes(x = AREA_HA, y = Q)) +
+  geom_point(alpha = 0.5, colour = "#56B4E9") +
+  labs(title = "Relación entre Q y A",
+       x = "A (ha)",
+       y = "Q") +
+  theme_minimal(base_size = 12)
 
-# Scatterplot log(Q) vs log(A)
-p_puntos_logQ_logA <- ggplot(ucs_rao_sf, aes(x = AREA_HA, y = Q)) +
-  geom_point(alpha = 0.5, color = "#56B4E9") +
-  scale_x_log10("log(A)") +
-  scale_y_log10("log(Q)") +
-  labs(title = "Relación entre log(Q) y log(A)", x = "log(A)", y = "log(Q)")
+# ── Scatterplot 2 · log10(Q) vs log10(A) ────────────────────────────────────
+p_puntos_logQ_logA <- ggplot(ucs_rao_sf,
+                             aes(x = AREA_HA, y = Q)) +
+  geom_point(alpha = 0.5, colour = "#56B4E9") +
+  scale_x_log10(name = expression(log[10](A))) +
+  scale_y_log10(name = expression(log[10](Q))) +
+  labs(title = expression("Relación log"[10] * "(Q) y log"[10] * "(A)")) +
+  theme_minimal(base_size = 12)
 
+# ── Mosaico (dos columnas) y guardado ───────────────────────────────────────
 
-p_dispersion_Qdens <- p_puntos_Qdens + p_puntos_logQ_logA
+p_dispersion_Q_A <- p_puntos_Q_A | p_puntos_logQ_logA
 
-p_dispersion_Qdens
-
-#guarda el último gráfico generado
-ggsave(here("Figures","dispersion_Qdens.png"), width = 8, height = 6, dpi = 350)
+ggsave(
+  here::here("Figures", "dispersion_Q_A.png"),
+  plot   = p_dispersion_Q_A,
+  width  = 7, height = 5, dpi = 350
+)
 
 ```
 
@@ -363,7 +412,7 @@ cor(ucs_rao_sf$Q, ucs_rao_sf$AREA_HA, use = "complete.obs", method = "spearman")
 
 ### 3.4 Relación con otras variables
 
-A contnuación se usan variables cualitativas presentes en los datos de CUS para explorar hipótesis sobre la relación con variables ambientales.
+A continuación se usan variables cualitativas presentes en los datos de UCS para explorar hipótesis sobre la relación con variables ambientales.
 
 ```{r rao_paisaje}
 
