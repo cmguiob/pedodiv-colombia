@@ -507,8 +507,6 @@ slope_cv_sf <- st_as_sf(
   data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), #convierte a sf
   crs = 4326) |>
   select(-.geo) |> #elimina columna de geometria obsoleta
-  mutate(mean = mean / (180 / pi), #correccion temporal, mientras se descarga lote
-         stdDev = stdDev / (180 / pi)) |>
   mutate(
       slope_cv = stdDev / mean, #calcula coeficiente de variación
       log_slope_cv = log(slope_cv + 1), #calcula log de coeficiente de variación

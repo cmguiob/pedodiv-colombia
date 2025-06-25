@@ -64,7 +64,7 @@ ucs_rao_sf <- ucs_rao_sf |>
 ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
 # Transforma a WGS84 (EPSG:4326), requerido por GEE
-ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
+ucs_sf_4326 <- st_transform(ucs_rao_sf, 9377)
 
 ```
 
@@ -261,10 +261,10 @@ modelo_df_completo <- modelo_df |>
   drop_na(
     log_Qdens,                                # Diversidad logarítmica densificada
     dem_mean, slope_mean,                     # Elevación y pendiente media
-    lst_mea, precip_mean,                     # Media de lst y precipitación
+    lst_mean, precip_mean,                     # Media de lst y precipitación
     dem_cv_dens, log_dem_cv_dens,             # Densidad y log de CV de elevación
     slope_cv_dens, log_slope_cv_dens,         # Densidad y log de CV de pendiente
-    lst_cv_temp, precip_cv_tem,               # CV temporal de LST y precipitación
+    lst_cv_temp, precip_cv_temp,               # CV temporal de LST y precipitación
     log_lst_cv_temp, log_precip_cv_temp,      # log de CV temporal
     lst_cv_temp_dens, precip_cv_temp_dens,    # Densidad y log de CV temporal de LST
     log_lst_cv_temp_dens, log_precip_cv_temp_dens
@@ -440,7 +440,7 @@ El modelo mostró:
 
 -   Estabilidad numérica adecuada.
 -   Coeficientes significativos para algunas variables clave.
--   R² de Tjur = 0.812 (alto, pero plausible).
+-   R² de Tjur = 0.87 (alto, pero plausible).
 
 El \*modelo B es preferido por su robustez, interpretabilidad y aplicabilidad predictiva.\*\* En adelante, nos enfocaremos en describir gráficamente sus efectos, residuales y predicciones espaciales.
 
@@ -500,11 +500,11 @@ p_dem_mean_z            <- marg_plot("dem_mean_z",
 p_precip_mean_z         <- marg_plot("precip_mean_z",
                                      "Precipitación media (z)")
 p_log_slope_cv_dens_z   <- marg_plot("log_slope_cv_dens_z",
-                                     "log₁₀ CV pendiente/Área (z)")
+                                     "log₁₀ CV pend/Área (z)")
 p_log_lst_cv_temp_dens_z<- marg_plot("log_lst_cv_temp_dens_z",
-                                     "log₁₀ CV LST temporal/Área (z)")
+                                     "log₁₀ CV LST temp/Área (z)")
 p_precip_cv_temp_dens_z <- marg_plot("precip_cv_temp_dens_z",
-                                     "CV precipitación temporal/Área (z)")
+                                     "CV precip temp/Área (z)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2 · Mosaico 3×2  (la última celda queda vacía para mantener proporción)
@@ -656,24 +656,66 @@ Se usa la vecindad por distancia pues estamos analizando los residuos de un mode
 
 ```{r analisis_moran_I}
 
-# Usamos los centroides de los UCS para definir relaciones espaciales
-modelo_centroides <- modelo_df_glm |> 
-  st_centroid(of_largest_polygon = TRUE)
+# 1 · Centroides en CRS 9377 (metros) ----------------------------------------
+centros_9377 <- modelo_df_glm |>
+  st_centroid(of_largest_polygon = TRUE) |>
+  st_transform(9377)
+xy <- st_coordinates(centros_9377)
 
-# Extraemos coordenadas de los centroides
-coords <- st_coordinates(modelo_centroides)
+# 2 · Vecindad única hasta el radio máximo -----------------------------------
+r_max  <- 300e3                     # 300 km → m
+nb_max <- dnearneigh(xy, 0, r_max)  # índices de vecinos
+d_max  <- nbdists(nb_max, xy)       # distancias (m)
 
-# Construye vecinos por k más cercanos (k=6 es común en análisis ecológicos y espaciales)
-k_vecinos <- knearneigh(coords, k = 6)
-vecindario <- knn2nb(k_vecinos)
+# 3 · Función protegida contra “sin-vecinos” ---------------------------------
+get_MI_fast <- function(r_km){
 
-# Matriz de pesos espacial estandarizada (filas suman 1)
-pesos <- nb2listw(vecindario, style = "W", zero.policy = TRUE)
+  r_m <- r_km * 1000                # km → m
 
-# Moran I global sobre residuales del modelo logit
-moran_global <- moran.test(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+  # 3·1  Copiamos y recortamos la vecindad
+  nb_i <- nb_max
+  nb_i$neighbours <- Map(\(v, d) v[d <= r_m],
+                         nb_max$neighbours,
+                         d_max)
 
-print(moran_global)
+  # 3·2  ¿algún polígono quedó sin vecinos?
+  if (any(lengths(nb_i$neighbours) == 0)) {
+    return(tibble(dist_km = r_km,
+                  I       = NA_real_,
+                  p.value = NA_real_))
+  }
+
+  # 3·3  Pesos y Morán I
+  lw_i <- nb2listw(nb_i, style = "W", zero.policy = TRUE)
+  mi   <- moran.test(modelo_df_glm$resid_hot_bal, lw_i,
+                     zero.policy = TRUE)
+
+  tibble(dist_km = r_km,
+         I       = mi$estimate["Moran I"],
+         p.value = mi$p.value)
+}
+
+# 4 · Ejecutamos para radios 25-300 km ---------------------------------------
+radios_km <- seq(25, 300, by = 25)
+moran_tab <- map_dfr(radios_km, get_MI_fast)
+
+# 5 · Gráfico  I  vs  distancia  (p < 0.05 en rojo) --------------------------
+pal_sig <- c(`TRUE`  = "#d73027",   # rojo   = significativo
+             `FALSE` = "grey60")    # gris   = no sig.
+
+g_moran <- ggplot(moran_tab,
+                  aes(dist_km, I, colour = p.value < 0.05)) +
+  geom_line(na.rm = TRUE) +
+  geom_point(size = 2, na.rm = TRUE) +
+  scale_colour_manual(values = pal_sig,
+                      labels = c("No", "Sí"),
+                      name   = "p < 0.05") +
+  labs(x = "Radio (km)",
+       y = "Moran I global",
+       title = "Autocorrelación espacial de los residuos según distancia") +
+  theme_minimal()
+
+print(g_moran)
 
 
 ```

@@ -14,19 +14,18 @@ pacman::p_load(
   ggdist,       # distribución visual de predicciones (stat_halfeye, intervalos)
   scales,       # transformación de escalas (log10, percentiles, breaks)
   ggplot2,      # sistema de gráficos base
+  grid,
+  GGally,       # mapa de correlación
   sjPlot,       # visualización de modelos y efectos marginales
   spdep,        # Análisis de dependencia espacial
   scales,       # Transformación de escalas
+  classInt,     # cortes con cuantiles 
   paletteer,    # acceso a múltiples paletas de colores (ej. viridis, wesanderson)
   googledrive,  # autenticación y manipulación de archivos en Google Drive
   patchwork,    # combinación de gráficos ggplot (p1 + p2)
   qs            # guardado y carga rápida de objetos R
 )
 
-#Paleta de colores
-pal <- wes_palette("Zissou1", 100, type = "continuous")
-
-col_hot  <- pal[90] 
 
 # Ajusta tamaño base de letra para todos los gráficos
 theme(base_size = 14)
@@ -267,28 +266,121 @@ modelo_df_balanceado <- modelo_df_completo |>
 
 
 
+## ------------------------------------------------------------------------------------------------------------
+
+# Umbral de colinealidad (Pearson)
+r_thr <- 0.70      
+
+
+# CANDIDATOS: define la fórmula *antes* de ajustar el modelo ------------------------------
+
+form_candidatos <- 
+  log_Qdens_hot95 ~ dem_mean_z + slope_mean_z + lst_mean_z + precip_mean_z +
+  log_dem_cv_z + log_slope_cv_z + log_lst_cv_temp_z + log_precip_cv_temp_z +
+  log_dem_cv_dens_z + log_slope_cv_dens_z + 
+  log_lst_cv_temp_dens_z + precip_cv_temp_dens_z
+
+vars_cand <- all.vars(form_candidatos)[-1]   # excluye la respuesta
+
+
+# Matriz de correlaciones ------------------------------------------------------------------
+
+mat_cor <- 
+  modelo_df_balanceado |>
+  st_drop_geometry()  |>                      # geometría no aporta a la cor
+  select(all_of(vars_cand)) |>
+  cor(use = "pairwise.complete.obs")
+
+
+# Visualización de correlograma -------------------------------------------------------------
+
+# 1 · Colores -------------------------------------------------------------------------------
+
+col_low  <- "#56B4E9"
+col_mid  <- "#F8F0C3FF"
+col_high <- "#FFD700"
+
+# Heat-map ----------------------------------------------------------------------------------
+p_corr_covs <- ggcorr(mat_cor,
+       low        = col_low,
+       mid        = col_mid,
+       high       = col_high,
+       midpoint   = 0,
+       hjust      = 0.9,
+       size       = 4,
+       color      = "grey60",
+       label      = TRUE,
+       label_alpha = TRUE,
+       label_size  = 3,
+       label_round = 2) +
+  ggtitle("Matriz de correlaciones entre predictores (Pearson)") +
+  theme_minimal(base_size = 12) +
+  coord_cartesian(clip = "off") +                # ← deja dibujar fuera del panel
+  theme(
+    panel.clip  = "off",                         # idem (≥ ggplot2 3.4)
+    plot.margin = unit(c(5, 5, 5, 90), "pt")    # más espacio a la izquierda
+  )
+
+
+# Guarda la figura
+ggsave(here("Figures", "correlacion_covariables.png"),
+       plot = p_corr_covs,
+       width = 6,
+       height = 4,
+       dpi = 350)
+
+
+
+## ----tabla_correlacion---------------------------------------------------------------------------------------
+
+## Tabla de pares con |r| > r_thr
+pares_altos <- 
+  as.data.frame(as.table(mat_cor)) |>                  # pasa a long
+  rename(var1 = Var1, var2 = Var2, r = Freq) |>
+  filter(var1 != var2, abs(r) >= r_thr) |>             # quita diagonal
+  mutate(across(c(var1, var2), as.character)) |>
+  rowwise() |>                                         # ordena alfabéticamente
+  mutate(pair_id = paste(sort(c(var1, var2)), collapse = "_")) |> 
+  ungroup() |>
+  distinct(pair_id, .keep_all = TRUE) |>               # evita duplicados A~B / B~A
+  arrange(desc(abs(r)))
+
+print(pares_altos, n = Inf)
+
+
 ## ----ajuste_modelos_logit_B----------------------------------------------------------------------------------
 
-# === Modelo B: Hotspots vs muestra aleatoria (balanceado) ===
-glm_hot_bal <- glm(
-  formula = log_Qdens_hot95 ~ 
-  dem_mean_z + slope_mean_z + lst_mean_z + precip_mean_z +
-  log_dem_cv_z + log_slope_cv_z + log_lst_cv_temp_z + log_precip_cv_temp_z +
-  log_dem_cv_dens_z + log_slope_cv_dens_z + log_lst_cv_temp_dens_z + precip_cv_temp_dens_z,
-  data = modelo_df_balanceado,
-  family = binomial()
+# Selecciona explícitamente las variables que intervendrán
+vars_glm <- c(
+  "log_Qdens_hot95",
+  "dem_mean_z",  "precip_mean_z",
+  "log_slope_cv_dens_z",
+  "log_lst_cv_temp_dens_z", "precip_cv_temp_dens_z"
 )
 
-# Agrega predicción y residuales a modelo_df_balanceado
-modelo_df_balanceado <- modelo_df_balanceado |>
+# Deja sólo esas columnas + geometría  y elimina cualquier NA
+modelo_df_glm <- modelo_df_balanceado |>
+  dplyr::select(all_of(vars_glm), geometry) |>
+  tidyr::drop_na()
+
+#  Ajusta el logit;  na.action = na.exclude  →  predict() devuelve NAs
+glm_hot_bal <- glm(
+  log_Qdens_hot95 ~ .,
+  data      = st_drop_geometry(modelo_df_glm),  # glm no necesita geometría
+  family    = binomial(),
+  na.action = na.exclude            # conserva longitud original
+)
+
+# Añade predicciones y residuos (longitud coincide con modelo_df_glm)
+modelo_df_glm <- modelo_df_glm |>
   mutate(
-    prob_hot_bal = predict(glm_hot_bal, type = "response"),
+    prob_hot_bal  = predict(glm_hot_bal, type = "response"),
     resid_hot_bal = residuals(glm_hot_bal, type = "response")
   )
 
-# Reporta ajuste
+# 5.  Breve diagnóstico
 summary(glm_hot_bal)
-performance::r2_tjur(glm_hot_bal)
+print(performance::r2_tjur(glm_hot_bal))
 
 
 
@@ -296,7 +388,7 @@ performance::r2_tjur(glm_hot_bal)
 
 p_coeficientes <- plot_model(glm_hot_bal, 
                              type = "est", 
-                             vline.color = "red", 
+                             vline.color = "black", 
                              show.values = TRUE, 
                              transform = NULL,
                              value.offset = .3) +
@@ -317,97 +409,113 @@ ggsave(here("Figures", "coeficientes_logit_b.png"),
 
 ## ------------------------------------------------------------------------------------------------------------
 
-# log_dem_cv_dens_z: log(CV de elevación densificado por área), estandarizado
-p_margin_log_dem_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_dem_cv_dens_z [all]", title = NULL) +
-  labs(x = "log(CV de DEM, densificado y estándar)",
-       y = "Probabilidad predicha de hotspot") +
-  theme_minimal()
-
-# log_slope_cv_dens_z: log(CV de pendiente densificado por área), estandarizado
-p_margin_log_slope_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_slope_cv_dens_z [all]", title = NULL) +
-  labs(x = "log(CV de SLOPE, densificado y estándar)",
-       y = "Probabilidad predicha de hotspot") +
-  theme_minimal()
-
-# log_lst_cv_temp_dens_z: log(CV de temperatura superficial densificado por área), estandarizado
-p_margin_log_lst_cv_dens_z <- plot_model(glm_hot_bal, type = "pred", terms = "log_lst_cv_temp_dens_z [all]", title = NULL) +
-  labs(x = "log(CV temporal de LST, densificado y estándar)",
-       y = "Probabilidad predicha de hotspot") +
-  theme_minimal()
-
-# Mosaico de curvas marginales
-p_curvas_marginales_logit_b <- p_margin_log_dem_cv_dens_z + p_margin_log_slope_cv_dens_z + p_margin_log_lst_cv_dens_z
-
-# Visualiza las curvas
-p_curvas_marginales_logit_b
-
-# Guarda la figura
-ggsave(here("Figures", "curvas_marginales_modelo_logit_b.png"),
-       plot = p_curvas_marginales_logit_b,
-       width = 9,
-       height = 4,
-       dpi = 350)
+# ─────────────────────────────────────────────────────────────────────────────
+# 1 · Curvas marginales (efectos predichos) para los 5 predictores del modelo
+# ─────────────────────────────────────────────────────────────────────────────
 
 
+# Helper ─ evita repetir theme & estilo de eje Y
+marg_plot <- function(var, xlbl){
+  plot_model(glm_hot_bal,
+             type  = "pred",
+             terms = sprintf("%s [all]", var),
+             title = NULL) +                     # sin título interno
+    labs(x = xlbl, y = "P(hotspot)") +
+    theme_minimal(base_size = 11)
+}
+
+# ── Generar los cinco gráficos ──────────────────────────────────────────────
+p_dem_mean_z            <- marg_plot("dem_mean_z",
+                                     "Elevación media (z)")
+p_precip_mean_z         <- marg_plot("precip_mean_z",
+                                     "Precipitación media (z)")
+p_log_slope_cv_dens_z   <- marg_plot("log_slope_cv_dens_z",
+                                     "log₁₀ CV pendiente/Área (z)")
+p_log_lst_cv_temp_dens_z<- marg_plot("log_lst_cv_temp_dens_z",
+                                     "log₁₀ CV LST temporal/Área (z)")
+p_precip_cv_temp_dens_z <- marg_plot("precip_cv_temp_dens_z",
+                                     "CV precipitación temporal/Área (z)")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2 · Mosaico 3×2  (la última celda queda vacía para mantener proporción)
+# ─────────────────────────────────────────────────────────────────────────────
+p_curvas_marginales <- p_dem_mean_z + p_precip_mean_z + p_log_slope_cv_dens_z + p_log_lst_cv_temp_dens_z + p_precip_cv_temp_dens_z + plot_layout(ncol = 5) 
+
+p_curvas_marginales
+
+# Guardar si se desea
+ggsave(
+  here::here("Figures", "p_curvas_marginales.png"),
+  plot   = p_curvas_marginales,
+  width  = 13, height = 3.2, dpi = 350
+)
+
+
+
+## ------------------------------------------------------------------------------------------------------------
+
+resid_plot <- function(var, xlbl){
+  ggplot(modelo_df_glm,
+         aes(x = .data[[var]], y = resid_hot_bal)) +
+    geom_point(alpha = .25, colour = "#56B4E9", size = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = xlbl, y = "Residuo") +
+    theme_minimal(base_size = 11)
+}
+
+p_residuos_1fila <-
+  resid_plot("dem_mean_z",              "Elevación media (z)")          +
+  resid_plot("precip_mean_z",           "Precip. media (z)")            +
+  resid_plot("log_slope_cv_dens_z",     "log₁₀ CV pend/Área (z)")       +
+  resid_plot("log_lst_cv_temp_dens_z",  "log₁₀ CV LST temp/Área (z)")   +
+  resid_plot("precip_cv_temp_dens_z",   "CV precip temp/Área (z)")      +
+  plot_layout(ncol = 5)
+
+
+p_residuos_1fila
+
+ggsave(
+  here::here("Figures", "mosaico_residuales_logit.png"),
+  plot   = p_residuos_1fila,
+  width  = 13, height = 3.2, dpi = 350
+)
 
 
 ## ------------------------------------------------------------------------------------------------------------
 
-p_resid_log_dem_cv_dens_z <- ggplot(modelo_df_balanceado, aes(x = log_dem_cv_dens_z, y = resid_hot_bal)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(y = "Residuos", x = "log(CV de elevación, densificado y estándar)") +
-  theme_minimal()
-
-p_resid_log_slope_cv_dens_z <- ggplot(modelo_df_balanceado, aes(x = log_slope_cv_dens_z, y = resid_hot_bal)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(y = "Residuos", x = "log(CV de pendiente, densificado y estándar)") +
-  theme_minimal()
-
-p_resid_log_lst_cv_temp_dens_z <- ggplot(modelo_df_balanceado, aes(x = log_lst_cv_temp_dens_z, y = resid_hot_bal)) +
-  geom_point(alpha = 0.3, color = "#56B4E9") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(y = "Residuos", x = "log(CV temporal de temperatura superficial, densificado y estándar)") +
-  theme_minimal()
-
-
-p_resid_balanceado_logit <- p_resid_log_dem_cv_dens_z + p_resid_log_slope_cv_dens_z + p_resid_log_lst_cv_temp_dens_z
-
-ggsave(here("Figures", "mosaico_residuales_logit.png"),
-       plot = p_resid_balanceado_logit,
-       width = 12,
-       height = 5,
-       dpi = 350)
-
-
-## ------------------------------------------------------------------------------------------------------------
+pal_zissou <- paletteer_c("grDevices::Zissou 1", 100)
+col_hot  <- pal_zissou[90] 
 
 # Extrae los hotspots observados como puntos
-hotspots_obs_sf <- modelo_df_balanceado |> 
+hotspots_obs_sf <- modelo_df_glm |> 
   filter(log_Qdens_hot95 == 1)
 
 # Mapa 1: solo hotspots observados como puntos, UCS en fondo
 p_mapa_obs <- ggplot() +
-  geom_sf(data = modelo_df_balanceado, fill = NA, color = "grey90", size = 0.1) +
+  geom_sf(data = modelo_df_glm, fill = NA, color = "grey90", size = 0.1) +
   geom_sf(data = hotspots_obs_sf, color = col_hot, size = 2) +
   labs(title = "Hotspots observados (puntos)") +
   theme_minimal()
 
 # Mapa 2: probabilidad predicha
-p_mapa_pred <- ggplot(modelo_df_balanceado) +
-  geom_sf(aes(fill = prob_hot_bal), color = NA) +
-  scale_fill_gradientn(
-  colours = rev(viridis::plasma(100)),  # ← rev() invierte los colores
-  limits = c(0, 0.6),
-  oob = scales::squish,
-  name = "Probabilidad\npredicha"
+# Genera 5 cortes (quintiles) sobre la columna de probabilidad
+cortes <- classInt::classIntervals(modelo_df_glm$prob_hot_bal,
+                                   n = 5, style = "quantile")$brks
+
+# Mapa con los 5 colores
+p_mapa_pred <- ggplot(modelo_df_glm) +
+  geom_sf(aes(fill = cut(prob_hot_bal, cortes,
+                         include.lowest = TRUE, dig.lab = 3)),
+          colour = NA) +
+  scale_fill_manual(
+    values = rev(viridis::plasma(5)),
+    name   = "Cuantiles de p"
   ) +
-  labs(title = "Probabilidad predicha de hotspot") +
+  labs(title = "Probabilidad predicha de hotspot (quintiles)") +
   theme_minimal()
 
 # Mapa 3: residuales
-p_mapa_resid <- ggplot(modelo_df_balanceado) +
+p_mapa_resid <- ggplot(modelo_df_glm) +
   geom_sf(aes(fill = resid_hot_bal), color = NA) +
   scale_fill_gradientn(
     colours = viridis::viridis(100),
@@ -434,7 +542,7 @@ ggsave(
 ## ----analisis_moran_I----------------------------------------------------------------------------------------
 
 # Usamos los centroides de los UCS para definir relaciones espaciales
-modelo_centroides <- modelo_df_balanceado |> 
+modelo_centroides <- modelo_df_glm |> 
   st_centroid(of_largest_polygon = TRUE)
 
 # Extraemos coordenadas de los centroides
@@ -448,7 +556,7 @@ vecindario <- knn2nb(k_vecinos)
 pesos <- nb2listw(vecindario, style = "W", zero.policy = TRUE)
 
 # Moran I global sobre residuales del modelo logit
-moran_global <- moran.test(modelo_df_balanceado$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+moran_global <- moran.test(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
 
 print(moran_global)
 
@@ -458,10 +566,10 @@ print(moran_global)
 ## ------------------------------------------------------------------------------------------------------------
 
 # Moran local (LISA)
-moran_local <- localmoran(modelo_df_balanceado$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+moran_local <- localmoran(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
 
 # Calcula el lag espacial de los residuos (para el scatterplot)
-modelo_df_balanceado <- modelo_df_balanceado |>
+modelo_df_glm <- modelo_df_glm |>
   mutate(
     local_moran_I = moran_local[, 1],
     p_valor_local = moran_local[, 5],
@@ -469,7 +577,7 @@ modelo_df_balanceado <- modelo_df_balanceado |>
   )
 
 # Clasifica tipo de agrupamiento espacial
-modelo_df_balanceado <- modelo_df_balanceado |>
+modelo_df_glm <- modelo_df_glm |>
   mutate(
     cluster_tipo = case_when(
       resid_hot_bal > 0 & lag_resid > 0 ~ "High-High",
@@ -496,7 +604,7 @@ colores_lisa <- c(
 )
 
 # Gráfico 1: Scatterplot de Moran local coloreado por tipo de agrupamiento
-p_scatter_lisa <- ggplot(modelo_df_balanceado, aes(x = resid_hot_bal, y = lag_resid)) +
+p_scatter_lisa <- ggplot(modelo_df_glm, aes(x = resid_hot_bal, y = lag_resid)) +
   geom_point(aes(color = cluster_tipo), alpha = 0.8, size = 1.5) +
   geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
@@ -511,7 +619,7 @@ p_scatter_lisa <- ggplot(modelo_df_balanceado, aes(x = resid_hot_bal, y = lag_re
   theme_minimal()
 
 # Gráfico 2: Mapa LISA de agrupamientos espaciales
-p_moran_lisa <- ggplot(modelo_df_balanceado) +
+p_moran_lisa <- ggplot(modelo_df_glm) +
   geom_sf(aes(fill = cluster_tipo), color = NA) +
   scale_fill_manual(values = colores_lisa, na.value = "white") +
   labs(title = "Mapa: agrupamientos LISA (residuales)",
@@ -519,7 +627,7 @@ p_moran_lisa <- ggplot(modelo_df_balanceado) +
   theme_minimal()
 
 # Gráfico 3: Mapa de valores Ii (magnitude de autocorrelación local)
-p_ii_mapa <- ggplot(modelo_df_balanceado) +
+p_ii_mapa <- ggplot(modelo_df_glm) +
   geom_sf(aes(fill = local_moran_I), color = NA) +
   scale_fill_viridis_c(name = "Ii", option = "magma", direction = -1) +
   labs(title = "Mapa: valor del estadístico local (Ii)") +

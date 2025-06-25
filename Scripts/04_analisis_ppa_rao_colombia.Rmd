@@ -133,7 +133,7 @@ ucs_rao_sf <- ucs_rao_sf |>
   
   mutate(
     # se deja un mínimo diferente de cero para trabajar con logaritmos
-    Q = case_when(Q == 0 ~ 1e-6, TRUE ~ Q),
+    Q = case_when(Q == 0 ~ 1e-3, TRUE ~ Q),
     #Se calcula la densidad de Q
     Qdens = Q / AREA_HA,
     log_Qdens = log(Qdens),  # suma pequeño valor para evitar log(0)
