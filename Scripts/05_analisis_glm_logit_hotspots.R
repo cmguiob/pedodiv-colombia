@@ -1,4 +1,4 @@
-## ----configuracion-------------------------------------------------------------------------------------------
+## ----configuracion-------------------------------------------------------------------------------------
 #Para exportar como .R plano
 # knitr::purl('05_analisis_glm_logit_hotspots.qmd')
 
@@ -35,7 +35,7 @@ theme(base_size = 14)
 
 
 
-## ----carga_pedodiversidad------------------------------------------------------------------------------------
+## ----carga_pedodiversidad------------------------------------------------------------------------------
 
 # Carga UCS ya procesadas y armonizadas (ver script externo)
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
@@ -49,11 +49,11 @@ ucs_rao_sf <- ucs_rao_sf |>
 ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
 
 # Transforma a WGS84 (EPSG:4326), requerido por GEE
-ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
+ucs_sf_4326 <- st_transform(ucs_rao_sf, 9377)
 
 
 
-## ----carga_covariables---------------------------------------------------------------------------------------
+## ----carga_covariables---------------------------------------------------------------------------------
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 0 · Ajuste de precisión para divisiones seguras
@@ -62,26 +62,33 @@ eps <- 1e-6                         # ε evita CV = σ/0
 safe_log10 <- function(x) log10(pmax(x, eps))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1 · DEM (media & CV espacial)
+# 1 · DEM  · media, CV y derivados (todas las variables en español)
 # ─────────────────────────────────────────────────────────────────────────────
-dem_cv <- readr::read_csv(
+dem_csv <- readr::read_csv(           # <- nombre lógico del objeto CSV
   here::here("Data/OUT_covars_csv/OUT_DEM_combinado.csv"),
   show_col_types = FALSE
 )
 
 covars_dem <- st_as_sf(
-  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)), crs = 4326
+  data.frame(dem_csv, geometry = geojson_sf(dem_csv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(dem_mean = mean) |>
+  # «media» en lugar de «mean»
+  dplyr::rename(dem_media = mean) |>
   dplyr::mutate(
-    dem_cv          = stdDev / pmax(abs(dem_mean), eps),
-    log_dem_cv      = safe_log10(dem_cv),
-    dem_cv_dens     = dem_cv / AREA_HA,
-    log_dem_cv_dens = safe_log10(dem_cv_dens),
-    across(c(dem_cv, log_dem_cv, dem_cv_dens, log_dem_cv_dens, dem_mean),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    # Coef. de variación espacial de la elevación
+    dem_cv              = stdDev / pmax(abs(dem_media), eps),
+    log_dem_cv          = safe_log10(dem_cv),
+
+    # Densidad de CV por unidad de superficie
+    dem_cv_densidad     = dem_cv / AREA_HA,
+    log_dem_cv_densidad = safe_log10(dem_cv_densidad),
+
+    # Versión estandarizada (Z-score) de cada métrica
+    across(c(dem_media, dem_cv, log_dem_cv,
+             dem_cv_densidad, log_dem_cv_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2 · SLOPE (media & CV espacial)
@@ -91,19 +98,21 @@ slope_cv <- readr::read_csv(
   show_col_types = FALSE
 )
 
-covars_slope <- st_as_sf(
+covars_pendiente <- st_as_sf(
   data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(slope_mean = mean) |>
+  dplyr::rename(pendiente_media = mean) |>
   dplyr::mutate(
-    slope_cv          = stdDev / pmax(abs(slope_mean), eps),
-    log_slope_cv      = safe_log10(slope_cv),
-    slope_cv_dens     = slope_cv / AREA_HA,
-    log_slope_cv_dens = safe_log10(slope_cv_dens),
-    across(c(slope_cv, log_slope_cv, slope_cv_dens, log_slope_cv_dens, slope_mean),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    pendiente_cv          = stdDev / pmax(abs(pendiente_media), eps),
+    log_pendiente_cv      = safe_log10(pendiente_cv),
+    pendiente_cv_densidad = pendiente_cv / AREA_HA,
+    log_pendiente_cv_densidad = safe_log10(pendiente_cv_densidad),
+    across(c(pendiente_cv, log_pendiente_cv,
+             pendiente_cv_densidad, log_pendiente_cv_densidad,
+             pendiente_media),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index, -Q)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3 · LST media espacial (2013-2023)
@@ -116,19 +125,21 @@ lst_media_esp <- readr::read_csv(
 covars_lst_media <- st_as_sf(
   data.frame(lst_media_esp, geometry = geojson_sf(lst_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_mean = mean) |>
+  dplyr::rename(lst_media = mean) |>
   dplyr::mutate(
-    log_lst_mean        = safe_log10(lst_mean),
-    lst_mean_dens       = lst_mean / AREA_HA,
-    log_lst_mean_dens   = safe_log10(lst_mean_dens),
-    across(c(lst_mean, log_lst_mean, lst_mean_dens, log_lst_mean_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_lst_media          = safe_log10(lst_media),
+    lst_media_densidad     = lst_media / AREA_HA,
+    log_lst_media_densidad = safe_log10(lst_media_densidad),
+    across(c(lst_media, log_lst_media,
+             lst_media_densidad, log_lst_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)  
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4 · LST CV temporal (2013-2023)
 # ─────────────────────────────────────────────────────────────────────────────
+
 lst_cv_temp <- readr::read_csv(
   here::here("Data/OUT_covars_csv/OUT_LST_cv_temporal_combinado.csv"),
   show_col_types = FALSE
@@ -137,15 +148,16 @@ lst_cv_temp <- readr::read_csv(
 covars_lst_cv_temp <- st_as_sf(
   data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_cv_temp = mean) |>
+  dplyr::rename(lst_cv_temporal = mean) |>
   dplyr::mutate(
-    log_lst_cv_temp        = safe_log10(lst_cv_temp),
-    lst_cv_temp_dens       = lst_cv_temp / AREA_HA,
-    log_lst_cv_temp_dens   = safe_log10(lst_cv_temp_dens),
-    across(c(lst_cv_temp, log_lst_cv_temp, lst_cv_temp_dens, log_lst_cv_temp_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_lst_cv_temporal          = safe_log10(lst_cv_temporal),
+    lst_cv_temporal_densidad     = lst_cv_temporal / AREA_HA,
+    log_lst_cv_temporal_densidad = safe_log10(lst_cv_temporal_densidad),
+    across(c(lst_cv_temporal, log_lst_cv_temporal,
+             lst_cv_temporal_densidad, log_lst_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5 · PRECIP CV temporal  &  6 · PRECIP media espacial (idéntica lógica)
@@ -160,13 +172,14 @@ precip_cv_temp <- readr::read_csv(
 covars_precip_cv_temp <- st_as_sf(
   data.frame(precip_cv_temp, geometry = geojson_sf(precip_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(precip_cv_temp = mean) |>
+  dplyr::rename(precip_cv_temporal = mean) |>
   dplyr::mutate(
-    log_precip_cv_temp        = safe_log10(precip_cv_temp),
-    precip_cv_temp_dens       = precip_cv_temp / AREA_HA,
-    log_precip_cv_temp_dens   = safe_log10(precip_cv_temp_dens),
-    across(c(precip_cv_temp, log_precip_cv_temp, precip_cv_temp_dens, log_precip_cv_temp_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_precip_cv_temporal          = safe_log10(precip_cv_temporal),
+    precip_cv_temporal_densidad     = precip_cv_temporal / AREA_HA,
+    log_precip_cv_temporal_densidad = safe_log10(precip_cv_temporal_densidad),
+    across(c(precip_cv_temporal, log_precip_cv_temporal,
+             precip_cv_temporal_densidad, log_precip_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)   
 
@@ -180,20 +193,21 @@ precip_media_esp <- readr::read_csv(
 covars_precip_media <- st_as_sf(
   data.frame(precip_media_esp, geometry = geojson_sf(precip_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(precip_mean = mean) |>
+  dplyr::rename(precip_media = mean) |>
   dplyr::mutate(
-    log_precip_mean        = safe_log10(precip_mean),
-    precip_mean_dens       = precip_mean / AREA_HA,
-    log_precip_mean_dens   = safe_log10(precip_mean_dens),
-    across(c(precip_mean, log_precip_mean, precip_mean_dens, log_precip_mean_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_precip_media          = safe_log10(precip_media),
+    precip_media_densidad     = precip_media / AREA_HA,
+    log_precip_media_densidad = safe_log10(precip_media_densidad),
+    across(c(precip_media, log_precip_media,
+             precip_media_densidad, log_precip_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 
 
 
-## ----join_covars---------------------------------------------------------------------------------------------
+## ----unir_variables------------------------------------------------------------------------------------
 
 # Une por id_creado, AREA_HA y UCSuelo
 modelo_df <- ucs_rao_sf |>
@@ -203,28 +217,34 @@ modelo_df <- ucs_rao_sf |>
     Qdens = Q / AREA_HA,                       # Densidad de diversidad
     log_Qdens = log10(Qdens)                   # Transformación log10
   ) |>
-  left_join(covars_dem |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_slope |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_lst_cv_temp  |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_lst_media |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_precip_cv_temp |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_precip_media |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo"))
+  left_join(covars_dem            |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_pendiente      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_cv_temp    |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_media      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_cv_temp |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_media   |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo"))
 
 # Verifica que la unión fue exitosa
 glimpse(modelo_df)
 
 
-## ----preparacion_modelado_logit------------------------------------------------------------------------------
+## ----preparacion_modelado------------------------------------------------------------------------------
 
 # Filtra UCS con covariables completas (sin NA en las variables seleccionadas)
 modelo_df_completo <- modelo_df |>
   drop_na(
     log_Qdens,                                # Diversidad logarítmica densificada
     dem_mean, slope_mean,                     # Elevación y pendiente media
-    lst_mea, precip_mean,                     # Media de lst y precipitación
+    lst_mean, precip_mean,                     # Media de lst y precipitación
     dem_cv_dens, log_dem_cv_dens,             # Densidad y log de CV de elevación
     slope_cv_dens, log_slope_cv_dens,         # Densidad y log de CV de pendiente
-    lst_cv_temp, precip_cv_tem,               # CV temporal de LST y precipitación
+    lst_cv_temp, precip_cv_temp,               # CV temporal de LST y precipitación
     log_lst_cv_temp, log_precip_cv_temp,      # log de CV temporal
     lst_cv_temp_dens, precip_cv_temp_dens,    # Densidad y log de CV temporal de LST
     log_lst_cv_temp_dens, log_precip_cv_temp_dens
@@ -239,7 +259,7 @@ modelo_df_completo <- modelo_df_completo |>
   mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral_hot95))
 
 
-## ----seleccion_subconjuntos_balanceados----------------------------------------------------------------------
+## ----subconjuntos_balanceados--------------------------------------------------------------------------
 
 # Cuántos hotspots hay en total
 n_hot <- modelo_df_completo |> filter(log_Qdens_hot95 == 1) |> nrow()
@@ -266,7 +286,7 @@ modelo_df_balanceado <- modelo_df_completo |>
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ------------------------------------------------------------------------------------------------------
 
 # Umbral de colinealidad (Pearson)
 r_thr <- 0.70      
@@ -331,7 +351,7 @@ ggsave(here("Figures", "correlacion_covariables.png"),
 
 
 
-## ----tabla_correlacion---------------------------------------------------------------------------------------
+## ----tabla_correlacion---------------------------------------------------------------------------------
 
 ## Tabla de pares con |r| > r_thr
 pares_altos <- 
@@ -348,7 +368,7 @@ pares_altos <-
 print(pares_altos, n = Inf)
 
 
-## ----ajuste_modelos_logit_B----------------------------------------------------------------------------------
+## ----ajuste_modelo-------------------------------------------------------------------------------------
 
 # Selecciona explícitamente las variables que intervendrán
 vars_glm <- c(
@@ -384,7 +404,7 @@ print(performance::r2_tjur(glm_hot_bal))
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----visualizacion_coeficientes------------------------------------------------------------------------
 
 p_coeficientes <- plot_model(glm_hot_bal, 
                              type = "est", 
@@ -407,7 +427,7 @@ ggsave(here("Figures", "coeficientes_logit_b.png"),
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----visualizacion_marginales--------------------------------------------------------------------------
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1 · Curvas marginales (efectos predichos) para los 5 predictores del modelo
@@ -430,11 +450,11 @@ p_dem_mean_z            <- marg_plot("dem_mean_z",
 p_precip_mean_z         <- marg_plot("precip_mean_z",
                                      "Precipitación media (z)")
 p_log_slope_cv_dens_z   <- marg_plot("log_slope_cv_dens_z",
-                                     "log₁₀ CV pendiente/Área (z)")
+                                     "log₁₀ CV pend/Área (z)")
 p_log_lst_cv_temp_dens_z<- marg_plot("log_lst_cv_temp_dens_z",
-                                     "log₁₀ CV LST temporal/Área (z)")
+                                     "log₁₀ CV LST temp/Área (z)")
 p_precip_cv_temp_dens_z <- marg_plot("precip_cv_temp_dens_z",
-                                     "CV precipitación temporal/Área (z)")
+                                     "CV precip temp/Área (z)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2 · Mosaico 3×2  (la última celda queda vacía para mantener proporción)
@@ -452,7 +472,7 @@ ggsave(
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----visualizaicon_residuales--------------------------------------------------------------------------
 
 resid_plot <- function(var, xlbl){
   ggplot(modelo_df_glm,
@@ -481,7 +501,7 @@ ggsave(
 )
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----visualizacion_mapas-------------------------------------------------------------------------------
 
 pal_zissou <- paletteer_c("grDevices::Zissou 1", 100)
 col_hot  <- pal_zissou[90] 
@@ -539,31 +559,73 @@ ggsave(
 
 
 
-## ----analisis_moran_I----------------------------------------------------------------------------------------
+## ----analisis_moran_I----------------------------------------------------------------------------------
 
-# Usamos los centroides de los UCS para definir relaciones espaciales
-modelo_centroides <- modelo_df_glm |> 
-  st_centroid(of_largest_polygon = TRUE)
+# 1 · Centroides en CRS 9377 (metros) ----------------------------------------
+centros_9377 <- modelo_df_glm |>
+  st_centroid(of_largest_polygon = TRUE) |>
+  st_transform(9377)
+xy <- st_coordinates(centros_9377)
 
-# Extraemos coordenadas de los centroides
-coords <- st_coordinates(modelo_centroides)
+# 2 · Vecindad única hasta el radio máximo -----------------------------------
+r_max  <- 300e3                     # 300 km → m
+nb_max <- dnearneigh(xy, 0, r_max)  # índices de vecinos
+d_max  <- nbdists(nb_max, xy)       # distancias (m)
 
-# Construye vecinos por k más cercanos (k=6 es común en análisis ecológicos y espaciales)
-k_vecinos <- knearneigh(coords, k = 6)
-vecindario <- knn2nb(k_vecinos)
+# 3 · Función protegida contra “sin-vecinos” ---------------------------------
+get_MI_fast <- function(r_km){
 
-# Matriz de pesos espacial estandarizada (filas suman 1)
-pesos <- nb2listw(vecindario, style = "W", zero.policy = TRUE)
+  r_m <- r_km * 1000                # km → m
 
-# Moran I global sobre residuales del modelo logit
-moran_global <- moran.test(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+  # 3·1  Copiamos y recortamos la vecindad
+  nb_i <- nb_max
+  nb_i$neighbours <- Map(\(v, d) v[d <= r_m],
+                         nb_max$neighbours,
+                         d_max)
 
-print(moran_global)
+  # 3·2  ¿algún polígono quedó sin vecinos?
+  if (any(lengths(nb_i$neighbours) == 0)) {
+    return(tibble(dist_km = r_km,
+                  I       = NA_real_,
+                  p.value = NA_real_))
+  }
+
+  # 3·3  Pesos y Morán I
+  lw_i <- nb2listw(nb_i, style = "W", zero.policy = TRUE)
+  mi   <- moran.test(modelo_df_glm$resid_hot_bal, lw_i,
+                     zero.policy = TRUE)
+
+  tibble(dist_km = r_km,
+         I       = mi$estimate["Moran I"],
+         p.value = mi$p.value)
+}
+
+# 4 · Ejecutamos para radios 25-300 km ---------------------------------------
+radios_km <- seq(25, 300, by = 25)
+moran_tab <- map_dfr(radios_km, get_MI_fast)
+
+# 5 · Gráfico  I  vs  distancia  (p < 0.05 en rojo) --------------------------
+pal_sig <- c(`TRUE`  = "#d73027",   # rojo   = significativo
+             `FALSE` = "grey60")    # gris   = no sig.
+
+g_moran <- ggplot(moran_tab,
+                  aes(dist_km, I, colour = p.value < 0.05)) +
+  geom_line(na.rm = TRUE) +
+  geom_point(size = 2, na.rm = TRUE) +
+  scale_colour_manual(values = pal_sig,
+                      labels = c("No", "Sí"),
+                      name   = "p < 0.05") +
+  labs(x = "Radio (km)",
+       y = "Moran I global",
+       title = "Autocorrelación espacial de los residuos según distancia") +
+  theme_minimal()
+
+print(g_moran)
 
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----analisis_LISA-------------------------------------------------------------------------------------
 
 # Moran local (LISA)
 moran_local <- localmoran(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
@@ -591,7 +653,7 @@ modelo_df_glm <- modelo_df_glm |>
 
 
 
-## ------------------------------------------------------------------------------------------------------------
+## ----visualizacion_LISA--------------------------------------------------------------------------------
 
 # Define colores personalizados desde paleta Zissou1 (viridis-like)
 pal <- wes_palette("Zissou1", 100, type = "continuous")

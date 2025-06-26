@@ -14,7 +14,7 @@ Este cuaderno implementa en un solo flujo la conexión de R con Google Earth Eng
 3.  **Derivación de rasters**: extracción y cálculo de elevacón, pendiente, curvatura vertical (TAGEE), temperatura superficial (Landsat) y VH/VV (Sentinel 1).
 4.  **Extracción de métricas**: media, desviación estándar y CV por polígono para cada variable.
 
-```{r configuracion}
+```{r configuracion, include = FALSE}
 
 #Para exportar como .R plano
 # knitr::purl('03_analisis_eda_covariables.qmd')
@@ -29,22 +29,24 @@ pacman::p_load(
   tidyr,       # ✗ (no usado; pivot, unnest…)
   stringr,     # utilidades de texto y regex
   purrr,       # programación funcional: map*, walk*
-  broom,       # ✗ (no usado; tidy de modelos)
   readr,       # lectura/escritura rápida de CSV
   ggdist,      # distribuciones y ‘raincloud’/histinterval
   scales,      # transformaciones y breaks de ejes
   ggplot2,     # visualización de datos
   paletteer,    # paletas de colores
-  patchwork,   # combinación de gráficos ggplot
-  wesanderson, # paletas continuas y discretas
-  qs           # ✗ (no usado; serialización rápida .qs)
+  patchwork   # combinación de gráficos ggplot
 )
-
-#Paleta de colores
-pal <- wes_palette("Zissou1", 100, type = "continuous")
 
 # Ajusta tamaño de letra para todo e lscript
 theme(base_size = 14)
+
+#Utilidades gráficas
+# Paletas de magnitud  (10 pasos → se interpolan en la escala) 
+pal_dem   <- paletteer::paletteer_c("grDevices::terrain.colors", n = 10)
+pal_slope <- paletteer::paletteer_c("grDevices::Temps",          n = 10)
+pal_lst   <- paletteer::paletteer_c("ggthemes::Red-Gold",        n = 10)
+pal_prec  <- paletteer::paletteer_c("grDevices::Earth",          n = 10) # "grDevices::Roma"
+
 
 # Selección entorno ya existente antes de cualquier llamado que use Python
 reticulate::use_condaenv("rgee_py", required = TRUE)
@@ -66,7 +68,7 @@ reticulate::py_run_string("import ee; ee.Initialize(project='even-electron-46171
 googledrive::drive_auth()
 ```
 
-Prueba de funcionamiento de rgee
+Antes de comenzar la descarga masiva de capas, verificamos el funcionamiento de rgee, viendo que la imagen SRTM (USGS/SRTMGL1_003) esté disponible y revisamos sus metadatos. Esto evita errores posteriores al recortar el DEM y asegura que trabajamos con la versión correcta.
 
 ```{r verifica_configuracion}
 
@@ -84,7 +86,7 @@ img$get("keywords")$getInfo()
 
 ### 1.1 Carga de datos de pedodiversidad de UCS
 
-Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo. Estos se utilizan acá para derivar las covariables a nivel de polígono de UCS. Por tal razón, solo se importan variables que no tengan NAs.
+Los datos producto del procesamiento de Rao, se han subido a un repositorio de Zenodo. Cargamos la geometría básica de las Unidades Cartográficas de Suelo (UCS) y la convertimos a WGS 84 (EPSG 4326). Esta capa —sin variables de diversidad— sirve como máscara espacial para extraer todas las covariables raster en los pasos siguientes.
 
 ```{r carga_pedodiversidad}
 
@@ -92,14 +94,15 @@ Los datos producto del procesamiento de Rao, se han subido a un repositorio de Z
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 # Asignación de id único para cada polígono
-ucs_rao_sf <- ucs_rao_sf |> 
+ucs_sf_4326 <- ucs_rao_sf |> 
   sf::st_make_valid() |> #valida geometrias problemáticas
+  sf::st_transform(4326) |> # Transforma a crs 4326 
   dplyr::select(id_creado, UCSuelo, AREA_HA) 
 
-ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
+ucs_sf_4326 <- ucs_sf_4326[!st_is_empty(ucs_sf_4326), ]
 
 #Se verifica visulalmente
-ggplot(data = ucs_rao_sf) +
+ggplot(data = ucs_sf_4326) +
   geom_sf(aes(fill = UCSuelo), color = NA) +  
   theme_void() +                             
   theme(legend.position = "none") 
@@ -107,7 +110,7 @@ ggplot(data = ucs_rao_sf) +
 
 ### 1.2 Carga de datos de unidades geológicas SGC
 
-Las unidades geológicas son un insumo que se utilizará posteriormente para los modelos jerárquicos. Estos datos se cargan via API del servicio de ArcGIS que usa el Servicio Geológico Colombiano. No requieren token.
+Descargamos el Mapa Geológico 1 : 500 000 directamente desde el servicio REST del SGC y reclasificamos cada polígono en era geológica (Cz, Mz, Pz, Ptz). Más adelante, esta era funcionará como nivel jerárquico en los modelos mixtos (interceptos y pendientes variables).
 
 ```{r geologia_descarga_reclasificacion}
 
@@ -194,7 +197,7 @@ geo_sf_wgs84 <- sf::st_read(url_solicitud) |>
 p_mapa_geo <- ggplot2::ggplot(geo_sf_wgs84) +
   geom_sf(aes(fill = era_geo), color = NA) +
   scale_fill_manual(
-    breaks = c("Cz", "Mz", "Pz", "Ptz", "Sin_dato"),
+    breaks = c("Cz", "Mz", "Pz", "Ptz", "NA"),
     values = c(
       Cz    = "#f8ea1e",
       Mz    = "#5bc5ea",
@@ -226,22 +229,12 @@ p_mapa_geo
 
 ### 1.3 Armonización con GEE
 
-Se definen parámetros de extensión, CRS y resolución para armonizar los datos de GEE con con los datos de pedodiversidad de UCS. Para la definición del área de recorte se toma un buffer sobre el objeto de sf. Esto amortiguará posteriormente efectos de borde en el cálculo de la diversidad. No se recomienda enviar el objeto completo y hacer el buffer en GEE, dado que el envío de un ubjeto con numerosos multipoligonos (como es el caso) es prohibitivo en GEE. Los envios no pueden superar 10MB por tarea.
+A partir de la capa UCS obtenemos su bounding box y lo convertimos a un rectángulo de GEE (bbox_ee). Todos los recortes de imágenes (DEM, MODIS, CHIRPS) usarán esta geometría para garantizar que las capas cubran exactamente el área de estudio.
 
-```{r transforma_crs}
-
-# Transforma a crs 4326 antes de pasarlo a GEE
-ucs_sf_4326 <- st_transform(ucs_rao_sf, 4326)
-
+```{r  tansforma_ee}
 
 # #Extrae bounding boxdel área del subconjunto
 bb_sf_4326 <- st_bbox(ucs_sf_4326)
-
-```
-
-Crea geometria de bbox en GEE usando las coordenadas del bbox creado en R con sf.
-
-```{r  tansform_ee}
 
 # Convertir a rectángulo de Earth Engine
 bbox_ee <- ee$Geometry$Rectangle(
@@ -262,7 +255,7 @@ A continuación se calculan los índices geomorfométricos e hidroclimáticos. P
 
 ### 2.1 DEM
 
-Se define el objeto raster de elevación y se visualiza su extensión.
+Descargamos el DEM SRTM (30 m) y lo recortamos al bbox_ee. La elevación media se usará como predictor topográfico y como base para derivar la pendiente y la curvatura.
 
 ```{r extraccion_dem}
 
@@ -274,13 +267,15 @@ Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   dem_clip,
   visParams = list(min = 0, max = 3000,
-                   palette = viridis::viridis(10)), 
+                   palette = pal_dem), 
   name = "DEM SRTM (nativo 30m)"
   )
 
 ```
 
 ### 2.2 Pendiente
+
+A partir del DEM generamos la pendiente en grados con ee.Terrain.slope. Esta métrica refleja la capacidad de transporte de materiales y será incluida en los modelos de hotspots.
 
 ```{r extraccion_pendiente}
 
@@ -294,19 +289,19 @@ slope_clip <- ee$Terrain$
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   slope_clip,
-  visParams = list(min = 0, max = 50,
-                   palette = viridis::viridis(10)), 
+  visParams = list(min = 0, max = 45,
+                   palette = pal_slope), 
   name = "Pendiente SRTM (nativo 30m)"
   )
 ```
 
 ### 2.3 Curvatura vertical
 
-A continuación se invoca la función terrainAnalysis del módulo TAGEE en GEE. Al hacerlo se calcula en la nube de Earth Engine un conjunto completo de atributos geomorfométricos a partir del DEM de entrada.TAGEE utliza un DEM base de ...
+Calculamos la curvatura vertical mediante la librería tagee. Esta variable captura la forma del relieve (cóncavo/convexo) y puede influir en la acumulación de suelos y humedad.
 
 Cada vez que se llama a py_install() o importa un nuevo módulo con reticulate::import(), reticulate reinicia o “reconfigure” el intérprete Python, y por tanto se debe repetir la inicialización de Earth Engine.
 
-```{r}
+```{r extraccion_curvatura}
 
 # Bloque único de setup (solo la primera vez)
 if (!py_module_available("tagee")) {
@@ -340,24 +335,15 @@ Map$addLayer(
 
 ### 2.4 Temperatura superficial
 
-La temperatura superficial se obtiene del producto MODIS MOD11A2 v6.1, un compuesto de 8 días a 1 km de resolución generado a partir de las observaciones diurnas del sensor térmico de Terra. Para garantizar una cobertura homogénea, se emplea toda la serie de 2013 – 2023 (≈ 460 compuestos por píxel). A partir de esta colección se derivan dos conjuntos de datos recortados al área de estudio (bbox):
-
--   Media espacial decenal – promedio de la LST (°C) de los 460 compuestos, que describe la temperatura superficial promedio del último decenio.
-
--   Coeficiente de variación temporal – relación entre la desviación estándar y la media (σ / μ) de la misma serie, indicador de cuán variable ha sido la temperatura en cada píxel a lo largo de diez años.
-
-Ambas capas se promedian después dentro de cada polígono UCS para incorporarlas como covariables térmicas en los modelos de pedodiversidad.
+La temperatura superficial se obtiene del producto MODIS MOD11A2 v6.1, un compuesto de 8 días a 1 km de resolución generado a partir de las observaciones diurnas del sensor térmico de Terra. Para garantizar una cobertura homogénea, se emplea toda la serie de 2013 – 2023 (≈ 460 compuestos por píxel). A partir de esta colección se derivan dos conjuntos de datos recortados al área de estudio.
 
 **MODIS LST — Media espacial (8-días, 1 km)**
 
-En este bloque cargamos el producto MOD11A2 v6.1 (compuesto de 8 días, 1 km, temperatura superficial diurna). Cada compuesto ya promedia las observaciones diarias “claras” dentro de su intervalo. Al convertir todos los compuestos de 2013-2023 a °C y aplicar mean(), obtenemos para cada píxel la LST diurna media decenal. Esta capa resume la temperatura superficial típica del último decenio y se usará como indicador térmico basal para cada polígono de suelos.
+En este bloque cargamos el producto MOD11A2 v6.1 (compuesto de 8 días, 1 km, temperatura superficial diurna). Cada compuesto ya promedia las observaciones diarias “claras” dentro de su intervalo. Al convertir todos los compuestos de 2013-2023 a °C y aplicar mean(), obtenemos para cada píxel la LST diurna media decenal. Esta magnitud térmica evalúa la energía disponible para procesos edáficos.
 
-```{r}
+```{r extraccion_st_media}
 
-
-# =============================================================================
 # Colección MODIS MOD11A2 (8-días, 1 km) convertida a °C
-# =============================================================================
 modis_collection <- ee$ImageCollection("MODIS/061/MOD11A2")$
   filterBounds(bbox_ee)$              # descarta las imágenes cuyo footprint no toca tu bbox_ee
   filterDate("2013-01-01", "2023-01-01")$
@@ -376,7 +362,7 @@ modis_media_espacial <- modis_collection$mean()$rename("modis_media_espacial")
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   modis_media_espacial, 
-  list(min = 10, max = 45, palette = c("blue","white","red")),
+  list(min = 10, max = 45, palette = pal_lst),
   "MODIS LST media (°C)"
 )
 
@@ -388,7 +374,7 @@ Map$addLayer(
 
 Partiendo de la misma colección MOD11A2 (2013-2023) derivamos primero la media y la desviación estándar de la serie de 8 días para cada píxel; su cociente (σ / μ) nos da el coeficiente de variación temporal (CV). Este mapa refleja qué tan inestable es la temperatura superficial a lo largo de los 10 años: valores altos indican variabilidad térmica marcada, valores bajos un régimen más estable.
 
-```{r}
+```{r extraccion_lst_cv}
 
 # =============================================================================
 # Colección MODIS MOD11A2 (8-días, 1 km) convertida a °C
@@ -413,7 +399,7 @@ modis_temp_cv   <- modis_temp_sd$divide(modis_temp_mean)$rename("modis_temp_cv")
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   modis_temp_cv, 
-  list(min = 0, max = 0.15, palette = c("blue","orange","red")),
+  list(min = 0, max = 0.15, palette = pal_lst),
   "MODIS LST CV temporal"
 )
 
@@ -427,7 +413,7 @@ La precipitación se extrae del producto CHIRPS v2.1 Daily (Climate Hazards Grou
 
 A partir de la misma serie diaria de CHIRPS se agrega primero a **totales mensuales** y luego se promedia esos 120 meses (2013-2023). El resultado es, para cada píxel, la **precipitación media mensual acumulada** (mm · mes⁻¹) representativa de la última década. Al reducir esta capa sobre los polígonos de suelos obtenemos, para cada UCS, un indicador directo de disponibilidad hídrica promedio ‒en la misma unidad temporal del CV mensual‒ que se incorporará como covariable en los modelos de pedodiversidad.
 
-```{r}
+```{r extraccion_precip_media}
 
 # (1) Colección diaria recortada al bbox
 chirps_daily <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
@@ -459,7 +445,7 @@ precip_media_espacial <- chirps_monthly_ic$
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   precip_media_espacial,
-  list(min = 0, max = 800, palette = c("blue", "white", "red")),
+  list(min = 0, max = 800, palette = pal_prec),
   "CHIRPS · media mensual (mm/mes)"
 )
 
@@ -471,7 +457,7 @@ Para cuantificar cuán irregular es la lluvia a lo largo del año, tomamos la se
 
 El mapa final resalta los lugares donde la precipitación mensual es más variable: valores altos indican regímenes pluviales muy irregulares, mientras que valores bajos corresponden a climas con lluvias más estables en el tiempo. Al promediar este CV dentro de cada UCS obtendremos una medida de variabilidad climática propia de cada polígono. La relación del CV con la media para cada lugar permite una interpretación directa (p. ej. “para un mes típico de lluvia de 300 mm/mes, un CV de 0,6 significa que la precipitación mensual típica varía un 60 % alrededor de 300 mm/mes, indicando un régimen muy irregular”).
 
-```{r}
+```{r extraccion_precip_cv}
 
 # Colección diaria recortada
 chirps_daily <- ee$ImageCollection("UCSB-CHG/CHIRPS/DAILY")$
@@ -502,7 +488,7 @@ precip_cv_temp   <- precip_sd_temp$divide(precip_mean_temp)$rename("precip_cv_te
 Map$setCenter(lon = -74, lat = 4, zoom = 5)
 Map$addLayer(
   precip_cv_temp,
-  list(min = 0, max = 1, palette = c("blue","orange","red")),
+  list(min = 0, max = 1, palette = pal_prec),
   "Precip CV temporal (mensual)"
 )
 
@@ -510,95 +496,99 @@ Map$addLayer(
 
 ## 3. Extracción de métricas
 
-Falta texto coherence: La función se encuentra en un script externo.... rgee para la extracción. ...los raster se muestrean a 50m si su resolución es mas fina, lo cual equivale a escala 1:100.000. Si la resolución es mas gruesa, se utiliza la que esté disponible.
+Paso único: resume cada covariable raster por polígono UCS y exporta los resultados a Google Drive en lotes adaptativos. El bloque está comentado porque los CSV ya se generaron anteriormente. Descomentar solo si se necesita recrear los archivos.
 
 ```{r exporta_covariables_poligonos}
 
+#Esto solo se corre una vez
+
 # Extrae estadísticas (mean / sd) por UCS y las envía a Drive en lotes adaptativos
-source(here::here("Scripts", "00_funcion_procesamiento_lotes_imagen.R"), encoding = "UTF-8")
+#source(here::here("Scripts", "00_funcion_procesamiento_lotes_imagen.R"), encoding = "UTF-8")
 
-registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_idx = 1, max_index = 43384, variable_name = "DEM", scale = 50)
+#registro_dem <- procesamiento_lotes_imagen(ucs_sf_4326, image = dem_clip, start_idx = 1, max_index = 43384, variable_name = "DEM", scale = 50)
 
-registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
+#registro_slope <- procesamiento_lotes_imagen(ucs_sf_4326, image = slope_clip, start_idx = 1, max_index = 43384, batch_s = 400, reduce_batch_by = 4, variable_name = "SLOPE", scale = 50)
 
-registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = modis_media_espacial, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 500)
+#registro_lst_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = modis_media_espacial, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_media_espacial", scale = 500)
 
-registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = modis_temp_cv, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 500)
+#registro_lst_temp <- procesamiento_lotes_imagen(ucs_sf_4326, image = modis_temp_cv, start_idx = 1, max_index = 43384, batch_s = 300, reduce_batch_by = 3, variable_name = "LST_cv_temporal", scale = 500)
 
-registro_precip_cv_temporal <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_cv_temp, start_idx = 1, max_index = nrow(ucs_sf_4326), batch_s = 300, reduce_batch_by = 3, variable_name  = "PRECIP_cv_temporal", scale = 500)
+#registro_precip_cv_temporal <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_cv_temp, start_idx = 1, max_index = nrow(ucs_sf_4326), batch_s = 300, reduce_batch_by = 3, variable_name  = "PRECIP_cv_temporal", scale = 500)
 
-registro_precip_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_media_espacial, start_idx = 1, max_index = 43384, batch_s = 300,   reduce_batch_by = 3, variable_name  = "PRECIP_media_espacial", scale = 500)
+#registro_precip_esp <- procesamiento_lotes_imagen(ucs_sf_4326, image = precip_media_espacial, start_idx = 1, max_index = 43384, batch_s = 300,   reduce_batch_by = 3, variable_name  = "PRECIP_media_espacial", scale = 500)
 
 
 ```
 
 **Post procesamiento de .csv**
 
-El código a continuación lee todos los .csv de una propiedad (por ejemplo, "slope"),los combina en un solo data.frame, lo guarda como OUT_slope_combinado.csv (o OUT\_<propiedad>\_combinado.csv según corresponda), y lo sube automáticamente al repositorio del proyecto, usando el paquete googledrive.
+Función auxiliar (comentada) para descargar los lotes exportados, combinarlos en un único CSV por variable y volver a subirlos al directorio del proyecto. Se deja inactiva para no duplicar descargas.
 
 ```{r reubicar_googledrive}
 
+#Esto solo se corre una vez
+
 # Copia local de archivos combinados para reproducibilidad offline
-combinar_y_subir_csv <- function(propiedad,
-                                 carpeta_drive_id_origen = "17yxwhlpgL4EG8inI5u8Nwi08wOrnhJiM",  # GEE_exports
-                                 carpeta_drive_id_destino = "1qJ5S25TZaFWzueNhx1M4Gr3P8JYWKGeU",  # Proyecto
-                                 carpeta_temporal = "tmp_csv") {
-
-  # Crea carpeta temporal local si no existe
-  if (!dir.exists(carpeta_temporal)) {
-    dir.create(carpeta_temporal)
-  }
-
-  # Listar archivos en Google Drive (solo .csv con prefijo exacto)
-  archivos_drive <- googledrive::drive_ls(
-    path = as_id(carpeta_drive_id_origen),
-    pattern = glue::glue("^{propiedad}_.*\\.csv$")
-  ) |>
-    dplyr::filter(stringr::str_ends(name, ".csv"))
-
-  if (nrow(archivos_drive) == 0) {
-    stop(glue::glue("No se encontraron archivos CSV para la propiedad '{propiedad}' en GEE_exports."))
-  }
-
-  message(glue::glue("📥 Descargando {nrow(archivos_drive)} archivos CSV para '{propiedad}'..."))
-
-  # Descargar archivos al directorio temporal
-  purrr::walk2(
-    archivos_drive$name,
-    archivos_drive$id,
-    ~ googledrive::drive_download(
-      file = as_id(.y),
-      path = file.path(carpeta_temporal, .x),
-      overwrite = TRUE
-    )
-  )
-
-  # Leer y combinar
-  archivos_locales <- list.files(path = carpeta_temporal,
-                                 pattern = paste0("^", propiedad, "_.*\\.csv$"),
-                                 full.names = TRUE)
-
-  combinado <- purrr::map_dfr(archivos_locales, readr::read_csv, show_col_types = FALSE)
-
-  # Escribir archivo combinado
-  nombre_salida <- paste0("OUT_", propiedad, "_combinado.csv")
-  ruta_salida <- file.path(carpeta_temporal, nombre_salida)
-  readr::write_csv(combinado, ruta_salida)
-
-  # Subir a carpeta final de proyecto en Drive
-  archivo_subido <- googledrive::drive_upload(
-    media = ruta_salida,
-    path = as_id(carpeta_drive_id_destino),
-    name = nombre_salida,
-    overwrite = TRUE
-  )
-
-  message(glue::glue("✅ Archivo combinado subido: {archivo_subido$name} (ID: {archivo_subido$id})"))
-
-  # Limpieza automática
-  unlink(carpeta_temporal, recursive = TRUE)
-  message("🧹 Archivos temporales eliminados.")
-}
+# combinar_y_subir_csv <- function(propiedad,
+#                                  carpeta_drive_id_origen = "17yxwhlpgL4EG8inI5u8Nwi08wOrnhJiM",  # GEE_exports
+#                                  carpeta_drive_id_destino = "1qJ5S25TZaFWzueNhx1M4Gr3P8JYWKGeU",  # Proyecto
+#                                  carpeta_temporal = "tmp_csv") {
+# 
+#   # Crea carpeta temporal local si no existe
+#   if (!dir.exists(carpeta_temporal)) {
+#     dir.create(carpeta_temporal)
+#   }
+# 
+#   # Listar archivos en Google Drive (solo .csv con prefijo exacto)
+#   archivos_drive <- googledrive::drive_ls(
+#     path = as_id(carpeta_drive_id_origen),
+#     pattern = glue::glue("^{propiedad}_.*\\.csv$")
+#   ) |>
+#     dplyr::filter(stringr::str_ends(name, ".csv"))
+# 
+#   if (nrow(archivos_drive) == 0) {
+#     stop(glue::glue("No se encontraron archivos CSV para la propiedad '{propiedad}' en GEE_exports."))
+#   }
+# 
+#   message(glue::glue("📥 Descargando {nrow(archivos_drive)} archivos CSV para '{propiedad}'..."))
+# 
+#   # Descargar archivos al directorio temporal
+#   purrr::walk2(
+#     archivos_drive$name,
+#     archivos_drive$id,
+#     ~ googledrive::drive_download(
+#       file = as_id(.y),
+#       path = file.path(carpeta_temporal, .x),
+#       overwrite = TRUE
+#     )
+#   )
+# 
+#   # Leer y combinar
+#   archivos_locales <- list.files(path = carpeta_temporal,
+#                                  pattern = paste0("^", propiedad, "_.*\\.csv$"),
+#                                  full.names = TRUE)
+# 
+#   combinado <- purrr::map_dfr(archivos_locales, readr::read_csv, show_col_types = FALSE)
+# 
+#   # Escribir archivo combinado
+#   nombre_salida <- paste0("OUT_", propiedad, "_combinado.csv")
+#   ruta_salida <- file.path(carpeta_temporal, nombre_salida)
+#   readr::write_csv(combinado, ruta_salida)
+# 
+#   # Subir a carpeta final de proyecto en Drive
+#   archivo_subido <- googledrive::drive_upload(
+#     media = ruta_salida,
+#     path = as_id(carpeta_drive_id_destino),
+#     name = nombre_salida,
+#     overwrite = TRUE
+#   )
+# 
+#   message(glue::glue("✅ Archivo combinado subido: {archivo_subido$name} (ID: {archivo_subido$id})"))
+# 
+#   # Limpieza automática
+#   unlink(carpeta_temporal, recursive = TRUE)
+#   message("🧹 Archivos temporales eliminados.")
+# }
 
 ```
 
@@ -640,26 +630,33 @@ eps <- 1e-6                         # ε evita CV = σ/0
 safe_log10 <- function(x) log10(pmax(x, eps))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1 · DEM (media & CV espacial)
+# 1 · DEM  · media, CV y derivados (todas las variables en español)
 # ─────────────────────────────────────────────────────────────────────────────
-dem_cv <- readr::read_csv(
+dem_csv <- readr::read_csv(           # <- nombre lógico del objeto CSV
   here::here("Data/OUT_covars_csv/OUT_DEM_combinado.csv"),
   show_col_types = FALSE
 )
 
 covars_dem <- st_as_sf(
-  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)), crs = 4326
+  data.frame(dem_csv, geometry = geojson_sf(dem_csv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(dem_mean = mean) |>
+  # «media» en lugar de «mean»
+  dplyr::rename(dem_media = mean) |>
   dplyr::mutate(
-    dem_cv          = stdDev / pmax(abs(dem_mean), eps),
-    log_dem_cv      = safe_log10(dem_cv),
-    dem_cv_dens     = dem_cv / AREA_HA,
-    log_dem_cv_dens = safe_log10(dem_cv_dens),
-    across(c(dem_cv, log_dem_cv, dem_cv_dens, log_dem_cv_dens, dem_mean),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    # Coef. de variación espacial de la elevación
+    dem_cv              = stdDev / pmax(abs(dem_media), eps),
+    log_dem_cv          = safe_log10(dem_cv),
+
+    # Densidad de CV por unidad de superficie
+    dem_cv_densidad     = dem_cv / AREA_HA,
+    log_dem_cv_densidad = safe_log10(dem_cv_densidad),
+
+    # Versión estandarizada (Z-score) de cada métrica
+    across(c(dem_media, dem_cv, log_dem_cv,
+             dem_cv_densidad, log_dem_cv_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2 · SLOPE (media & CV espacial)
@@ -669,19 +666,21 @@ slope_cv <- readr::read_csv(
   show_col_types = FALSE
 )
 
-covars_slope <- st_as_sf(
+covars_pendiente <- st_as_sf(
   data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(slope_mean = mean) |>
+  dplyr::rename(pendiente_media = mean) |>
   dplyr::mutate(
-    slope_cv          = stdDev / pmax(abs(slope_mean), eps),
-    log_slope_cv      = safe_log10(slope_cv),
-    slope_cv_dens     = slope_cv / AREA_HA,
-    log_slope_cv_dens = safe_log10(slope_cv_dens),
-    across(c(slope_cv, log_slope_cv, slope_cv_dens, log_slope_cv_dens, slope_mean),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    pendiente_cv          = stdDev / pmax(abs(pendiente_media), eps),
+    log_pendiente_cv      = safe_log10(pendiente_cv),
+    pendiente_cv_densidad = pendiente_cv / AREA_HA,
+    log_pendiente_cv_densidad = safe_log10(pendiente_cv_densidad),
+    across(c(pendiente_cv, log_pendiente_cv,
+             pendiente_cv_densidad, log_pendiente_cv_densidad,
+             pendiente_media),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3 · LST media espacial (2013-2023)
@@ -694,19 +693,21 @@ lst_media_esp <- readr::read_csv(
 covars_lst_media <- st_as_sf(
   data.frame(lst_media_esp, geometry = geojson_sf(lst_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_mean = mean) |>
+  dplyr::rename(lst_media = mean) |>
   dplyr::mutate(
-    log_lst_mean        = safe_log10(lst_mean),
-    lst_mean_dens       = lst_mean / AREA_HA,
-    log_lst_mean_dens   = safe_log10(lst_mean_dens),
-    across(c(lst_mean, log_lst_mean, lst_mean_dens, log_lst_mean_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_lst_media          = safe_log10(lst_media),
+    lst_media_densidad     = lst_media / AREA_HA,
+    log_lst_media_densidad = safe_log10(lst_media_densidad),
+    across(c(lst_media, log_lst_media,
+             lst_media_densidad, log_lst_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)  
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4 · LST CV temporal (2013-2023)
 # ─────────────────────────────────────────────────────────────────────────────
+
 lst_cv_temp <- readr::read_csv(
   here::here("Data/OUT_covars_csv/OUT_LST_cv_temporal_combinado.csv"),
   show_col_types = FALSE
@@ -715,15 +716,16 @@ lst_cv_temp <- readr::read_csv(
 covars_lst_cv_temp <- st_as_sf(
   data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_cv_temp = mean) |>
+  dplyr::rename(lst_cv_temporal = mean) |>
   dplyr::mutate(
-    log_lst_cv_temp        = safe_log10(lst_cv_temp),
-    lst_cv_temp_dens       = lst_cv_temp / AREA_HA,
-    log_lst_cv_temp_dens   = safe_log10(lst_cv_temp_dens),
-    across(c(lst_cv_temp, log_lst_cv_temp, lst_cv_temp_dens, log_lst_cv_temp_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_lst_cv_temporal          = safe_log10(lst_cv_temporal),
+    lst_cv_temporal_densidad     = lst_cv_temporal / AREA_HA,
+    log_lst_cv_temporal_densidad = safe_log10(lst_cv_temporal_densidad),
+    across(c(lst_cv_temporal, log_lst_cv_temporal,
+             lst_cv_temporal_densidad, log_lst_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5 · PRECIP CV temporal  &  6 · PRECIP media espacial (idéntica lógica)
@@ -738,13 +740,14 @@ precip_cv_temp <- readr::read_csv(
 covars_precip_cv_temp <- st_as_sf(
   data.frame(precip_cv_temp, geometry = geojson_sf(precip_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(precip_cv_temp = mean) |>
+  dplyr::rename(precip_cv_temporal = mean) |>
   dplyr::mutate(
-    log_precip_cv_temp        = safe_log10(precip_cv_temp),
-    precip_cv_temp_dens       = precip_cv_temp / AREA_HA,
-    log_precip_cv_temp_dens   = safe_log10(precip_cv_temp_dens),
-    across(c(precip_cv_temp, log_precip_cv_temp, precip_cv_temp_dens, log_precip_cv_temp_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_precip_cv_temporal          = safe_log10(precip_cv_temporal),
+    precip_cv_temporal_densidad     = precip_cv_temporal / AREA_HA,
+    log_precip_cv_temporal_densidad = safe_log10(precip_cv_temporal_densidad),
+    across(c(precip_cv_temporal, log_precip_cv_temporal,
+             precip_cv_temporal_densidad, log_precip_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)   
 
@@ -758,222 +761,251 @@ precip_media_esp <- readr::read_csv(
 covars_precip_media <- st_as_sf(
   data.frame(precip_media_esp, geometry = geojson_sf(precip_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(precip_mean = mean) |>
+  dplyr::rename(precip_media = mean) |>
   dplyr::mutate(
-    log_precip_mean        = safe_log10(precip_mean),
-    precip_mean_dens       = precip_mean / AREA_HA,
-    log_precip_mean_dens   = safe_log10(precip_mean_dens),
-    across(c(precip_mean, log_precip_mean, precip_mean_dens, log_precip_mean_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_precip_media          = safe_log10(precip_media),
+    precip_media_densidad     = precip_media / AREA_HA,
+    log_precip_media_densidad = safe_log10(precip_media_densidad),
+    across(c(precip_media, log_precip_media,
+             precip_media_densidad, log_precip_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
+
 
 
 ```
 
 ## 4. EDA covariables
 
-Ya que `dem_cv_sf`, `slope_cv_sf` y `ucs_rao_sf` comparten `id_creado` como identificador único, se hace un `left_join` sucesivo para combinar sus métricas
+Se unen las tablas con base en el `id_creado` como identificador único, además de `AREA_HA`y `UCSuelo`para confirmación.
 
-```{r}
+```{r union_variables}
 
 # Unir a la tabla base
-modelo_df <- ucs_rao_sf |>
-  left_join(covars_dem |> st_drop_geometry(),        by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_slope |> st_drop_geometry(),      by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_lst_cv_temp  |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_lst_media |> st_drop_geometry(),    by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_precip_cv_temp |> st_drop_geometry(),  by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_precip_media |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo"))
+modelo_df <- ucs_sf_4326 |>
+  left_join(covars_dem            |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_pendiente      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_cv_temp    |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_media      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_cv_temp |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_media   |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo"))
+
 
 ```
 
 ### 4.1 Distribuciones
 
-Se verifican visualmente las distribuciones de la magnitud y coeficiente de variación de las covariables. Debido a que el coeficiente de variación
+Exploramos la distribución univariada de cada covariable en tres escalas: magnitud absoluta, log CV y log CV densificado. Esto permite detectar sesgos/colas y decidir transformaciones adicionales si fueran necesarias.
 
-```{r}
+```{r visualiza_distribuciones}
 
-# Función general para histogramas
+# ---------------------------------------------------------------------------
+# FUNCIÓN utilitaria · histograma + densidad
+#   data  : tabla con todas las variables
+#   var   : columna a graficar (tidy-eval)
+#   title : título del panel
+#   xlab  : texto del eje-X
+# ---------------------------------------------------------------------------
 common_hist <- function(data, var, title, xlab){
   ggplot(dplyr::filter(data, is.finite({{ var }})), aes({{ var }})) +
-    ggdist::stat_histinterval(fill = "#56B4E9", colour = "black") +  # sin “bins”
-    geom_density(aes(y = after_stat(scaled)), colour = "#FFD700",
-                 linewidth = 0.8) +
+    # Histograma con intervalos de credibilidad (ggdist)
+    ggdist::stat_histinterval(fill = "#56B4E9", colour = "black") +
+    # Curva de densidad (área = 1) re-escalada a la altura del histo
+    geom_density(aes(y = after_stat(scaled)),
+                 colour = "#FFD700", linewidth = 0.8) +
     labs(title = title, x = xlab, y = "Frecuencia") +
     theme_minimal(base_size = 12)
 }
 
-# Magnitudes ---------------------------------------------------------------
-p_dem_mean   <- common_hist(modelo_df, dem_mean,   "Elevación media",           "m")
-p_slope_mean <- common_hist(modelo_df, slope_mean, "Pendiente media",           "°")
-p_lst_mean   <- common_hist(modelo_df, lst_mean,   "LST media",                "°C")
-p_prec_mean  <- common_hist(modelo_df, precip_mean,"Precip. media mensual","mm·mes⁻¹")
+# ── MAGNITUDES ─────────────────────────────────────────────────────────────
+p_dem_media      <- common_hist(modelo_df, dem_media,
+                                "Elevación media", "m")
 
-# log(CV) ------------------------------------------------------------------
-p_dem_log_cv   <- common_hist(modelo_df, log_dem_cv,
-                              expression(log[10]*"CV DEM"),          expression(log[10]*"CV"))
-p_slope_log_cv <- common_hist(modelo_df, log_slope_cv,
-                              expression(log[10]*"CV pendiente"),    expression(log[10]*"CV"))
-p_lst_log_cv   <- common_hist(modelo_df, log_lst_cv_temp,
-                              expression(log[10]*"CV LST"),          expression(log[10]*"CV"))
-p_prec_log_cv  <- common_hist(modelo_df, log_precip_cv_temp,
-                              expression(log[10]*"CV precipitación"),expression(log[10]*"CV"))
+p_pend_media     <- common_hist(modelo_df, pendiente_media,
+                                "Pendiente media", "°")
 
-# log(CV dens) -------------------------------------------------------------
-p_dem_log_cvd   <- common_hist(modelo_df, log_dem_cv_dens,
-                               expression(log[10]*"CVdens DEM"),          expression(log[10]*"CVdens"))
-p_slope_log_cvd <- common_hist(modelo_df, log_slope_cv_dens,
-                               expression(log[10]*"CVdens pendiente"),    expression(log[10]*"CVdens"))
-p_lst_log_cvd   <- common_hist(modelo_df, log_lst_cv_temp_dens,
-                               expression(log[10]*"CVdens LST"),          expression(log[10]*"CVdens"))
-p_prec_log_cvd  <- common_hist(modelo_df, log_precip_cv_temp_dens,
-                               expression(log[10]*"CVdens precipitación"),expression(log[10]*"CVdens"))
+p_lst_media      <- common_hist(modelo_df, lst_media,
+                                "Tº superficie (LST)", "°C")
 
-# Mosaico 4×3 --------------------------------------------------------------
+p_prec_media     <- common_hist(modelo_df, precip_media,
+                                "Precip. media mensual", "mm·mes⁻¹")
 
+# ── log-CV ─────────────────────────────────────────────────────────────────
+p_log_dem_cv     <- common_hist(modelo_df, log_dem_cv,
+                                expression(log[10]*"CV DEM"),
+                                expression(log[10]*"CV"))
+
+p_log_pend_cv    <- common_hist(modelo_df, log_pendiente_cv,
+                                expression(log[10]*"CV pendiente"),
+                                expression(log[10]*"CV"))
+
+p_log_lst_cv     <- common_hist(modelo_df, log_lst_cv_temporal,
+                                expression(log[10]*"CV LST"),
+                                expression(log[10]*"CV"))
+
+p_log_prec_cv    <- common_hist(modelo_df, log_precip_cv_temporal,
+                                expression(log[10]*"CV precipitación"),
+                                expression(log[10]*"CV"))
+
+# ── log-CV densidad ───────────────────────────────────────────────────────
+p_log_dem_cvd    <- common_hist(modelo_df, log_dem_cv_densidad,
+                                expression(log[10]*"CV dens. DEM"),
+                                expression(log[10]*"CV dens."))
+
+p_log_pend_cvd   <- common_hist(modelo_df, log_pendiente_cv_densidad,
+                                expression(log[10]*"CV dens. pendiente"),
+                                expression(log[10]*"CV dens."))
+
+p_log_lst_cvd    <- common_hist(modelo_df, log_lst_cv_temporal_densidad,
+                                expression(log[10]*"CV dens. LST"),
+                                expression(log[10]*"CV dens."))
+
+p_log_prec_cvd   <- common_hist(modelo_df, log_precip_cv_temporal_densidad,
+                                expression(log[10]*"CV dens. precipitación"),
+                                expression(log[10]*"CV dens."))
+
+# ── Mosaico 4 × 3 ──────────────────────────────────────────────────────────
 p_mosaico_hist <- (
-  p_dem_mean  | p_slope_mean  | p_lst_mean  | p_prec_mean) /
-  (p_dem_log_cv | p_slope_log_cv | p_lst_log_cv | p_prec_log_cv) /
-  (p_dem_log_cvd| p_slope_log_cvd| p_lst_log_cvd| p_prec_log_cvd)
+  p_dem_media | p_pend_media | p_lst_media | p_prec_media) /
+  (p_log_dem_cv | p_log_pend_cv | p_log_lst_cv | p_log_prec_cv) /
+  (p_log_dem_cvd| p_log_pend_cvd| p_log_lst_cvd| p_log_prec_cvd)
 
-# Muestra en visor
+# Vista rápida en el visor
 p_mosaico_hist
 
-# Guardar si se desea
+# Exportar (opcional)
 ggsave(
   here::here("Figures", "mosaico_hist_covariables.png"),
   plot   = p_mosaico_hist,
   width  = 12, height = 9, dpi = 350
 )
-
 ```
 
 ### 4.2 Visualización espacial de las covariables
 
-Se visualizan las covariables rasterizadas. Las escalas de colores se reflejan asociaciones simbólicas con los procesos físicos que representan (e.g. rojo, mayor temperatura, azul, mayor precipitación). La escala de mapas de coeficientes de varaición representa n
+Generamos mapas coropléticos de magnitud (fila 1) y variabilidad (CV) (fila 2) para cada covariable, junto con el mapa geológico. El mosaico final ofrece una visión espacial comparativa previa al modelado de heterogeneidad y dependencia espacial. Las escalas de colores se reflejan asociaciones simbólicas con los procesos físicos que representan (e.g. rojo, mayor temperatura, azul, mayor precipitación). La escala de mapas de coeficientes de varaición representa n
 
-```{r}
-
-# Definición de colores --------------------------------------------------------
-
-# Paletas de magnitud  (10 pasos → se interpolan en la escala) 
-
-pal_dem   <- paletteer::paletteer_c("grDevices::terrain.colors", n = 10)
-pal_slope <- paletteer::paletteer_c("grDevices::Temps",          n = 10)
-pal_lst   <- paletteer::paletteer_c("ggthemes::Red-Gold",        n = 10)
-pal_prec  <- paletteer::paletteer_c("grDevices::Earth",          n = 10) # "grDevices::Roma"
+```{r visualiza_mapas}
 
 
-# Gradientes monocromáticos  blanco → color_extremo  (para los CV PUROS)
+# ---------------------------------------------------------------------------
+# GRADIENTES monocromáticos para los mapas de CV
+#   – blancos para valores bajos
+#   – color saturado para valores altos
+# ---------------------------------------------------------------------------
+mono_pal <- function(col_hex, n = 100)
+  colorRampPalette(c("#ffffff", col_hex))(n)
 
-mono_pal <- function(col_hex, n = 100) colorRampPalette(c("#ffffff", col_hex))(n)
+pal_dem_cv        <- mono_pal(head(pal_dem,   1))
+pal_pendiente_cv  <- mono_pal(tail(pal_slope, 1))
+pal_lst_cv        <- mono_pal(tail(pal_lst,   1))
+pal_prec_cv       <- mono_pal(tail(pal_prec,  1))
 
-pal_dem_cv   <- mono_pal(head(pal_dem, 1))   # ← ahora usa el 1er color
-pal_slope_cv <- mono_pal(tail(pal_slope, 1))
-pal_lst_cv   <- mono_pal(tail(pal_lst,   1))
-pal_prec_cv  <- mono_pal(tail(pal_prec,  1))
-
-
-# Función genérica para mapas --------------------------------------------------
-
-# ARGUMENTOS
-#   data   : data.frame / tibble con geometría sf.
-#   var    : nombre de la columna a mapear (tidy-eval, sin comillas).
-#   pal    : vector de colores hex (paleta continua ya generada).
-#   titulo : texto para el título del mapa.
-
+# ---------------------------------------------------------------------------
+# FUNCIÓN genérica para mapas de magnitud
+# ---------------------------------------------------------------------------
 map_mag <- function(data, var, pal, titulo, leyenda){
   ggplot(data) +
     geom_sf(aes(fill = {{ var }}), colour = NA) +
     scale_fill_gradientn(
-      colours = pal, 
-      na.value = "white",
-      guide   = guide_colourbar(
-        direction      = "vertical",
-        barwidth       = unit(0.25, "cm"),
-        barheight      = unit(2.5,  "cm"),
-        title.position = "top"
-        ),
+      colours = pal, na.value = "white",
+      guide   = guide_colourbar(barwidth = unit(0.25,"cm"),
+                                barheight = unit(2.5,"cm"),
+                                direction = "vertical",
+                                title.position = "top"),
       name = leyenda
-      ) +
+    ) +
     labs(title = titulo) +
     coord_sf(expand = FALSE) +
-    scale_x_continuous(breaks = seq(from = -79, to = -70, by = 3)) +
-    theme_minimal() + 
-    theme(legend.justification = c("right", "top"),
-          plot.title = element_text(size = 10, hjust = 0.5))  # centrado y tamaño menor)
+    scale_x_continuous(breaks = seq(-79, -70, by = 3)) +
+    theme_minimal() +
+    theme(legend.justification = c("right","top"),
+          plot.title = element_text(size = 10, hjust = .5))
 }
 
+# ---------------------------------------------------------------------------
+# FUNCIÓN genérica para mapas de variabilidad (CV, escala log)
+# ---------------------------------------------------------------------------
 map_cv <- function(data, var, pal, titulo){
-  ggplot(data |> dplyr::filter({{ var }} > 0)) + #Descarta valores cero o negativos antes de transformar
+  ggplot(dplyr::filter(data, {{ var }} > 0)) +   # evita log(0)
     geom_sf(aes(fill = {{ var }}), colour = NA) +
     scale_fill_gradientn(
       colours = pal,
-      trans   = "log10", # usa escala log-10 para contrastar valores bajos y altos de CV
+      trans   = "log10",
       breaks  = scales::trans_breaks("log10", function(x) 10^x),
-       labels  = scales::label_scientific(digits = 1),
+      labels  = scales::label_scientific(digits = 1),
       na.value = "white",
-      guide   = guide_colourbar(
-        direction      = "vertical",
-        barwidth       = unit(0.25, "cm"),
-        barheight      = unit(2.5,  "cm"),
-        title.position = "top"
-        ),
+      guide   = guide_colourbar(barwidth = unit(0.25,"cm"),
+                                barheight = unit(2.5,"cm"),
+                                direction = "vertical",
+                                title.position = "top"),
       name    = "CV"
     ) +
     labs(title = titulo) +
     coord_sf(expand = FALSE) +
-    scale_x_continuous(breaks = seq(from = -79, to = -70, by = 3)) +
-    theme_minimal() + 
-    theme(legend.justification = c("right", "top"),
-          plot.title = element_text(size = 10, hjust = 0.5))  # centrado y tamaño menor)
+    scale_x_continuous(breaks = seq(-79, -70, by = 3)) +
+    theme_minimal() +
+    theme(legend.justification = c("right","top"),
+          plot.title = element_text(size = 10, hjust = .5))
 }
 
-##############################################################################
+# ---------------------------------------------------------------------------
+# MAPAS DE MAGNITUD
+# ---------------------------------------------------------------------------
+p_dem_media      <- map_mag(modelo_df, dem_media,       pal_dem,
+                            "Media de DEM (m)",               "m")
 
-# Generación de mapas ----------------------------------------------------------
+p_pend_media     <- map_mag(modelo_df, pendiente_media,  pal_slope,
+                            "Media de pendiente (°)",         "°")
 
-# Mapas de magnitud
+p_lst_media      <- map_mag(modelo_df, lst_media,        pal_lst,
+                            "Media de LST (°C)",              "°C")
 
-p_dem_mean   <- map_mag(modelo_df, dem_mean,   pal_dem,   "Media de DEM (m)",               "m")
-p_slope_mean <- map_mag(modelo_df, slope_mean, pal_slope, "Media de pendiente (°)",         "°")
-p_lst_mean   <- map_mag(modelo_df, lst_mean,  pal_lst,   "Media de LST (°C)",              "°C")
-p_prec_mean  <- map_mag(modelo_df, precip_mean,pal_prec, "Media de precipitación (mm·mes⁻¹)","mm")
+p_prec_media     <- map_mag(modelo_df, precip_media,     pal_prec,
+                            "Media de precipitación (mm·mes⁻¹)", "mm")
 
+# ---------------------------------------------------------------------------
+# MAPAS DE VARIABILIDAD (CV)
+# ---------------------------------------------------------------------------
+p_dem_cv         <- map_cv(modelo_df, dem_cv,            pal_dem_cv,
+                            "CV de DEM")
 
-# Mapas de variabilidad  (CV, NO densificado)
+p_pend_cv        <- map_cv(modelo_df, pendiente_cv,      pal_pendiente_cv,
+                            "CV de pendiente")
 
-p_dem_cv   <- map_cv(modelo_df, dem_cv,        pal_dem_cv,   "CV de DEM")
-p_slope_cv <- map_cv(modelo_df, slope_cv,      pal_slope_cv, "CV de pendiente")
-p_lst_cv   <- map_cv(modelo_df, lst_cv_temp,   pal_lst_cv,   "CV de LST")
-p_prec_cv  <- map_cv(modelo_df, precip_cv_temp,pal_prec_cv,  "CV de precipitación")
+p_lst_cv         <- map_cv(modelo_df, lst_cv_temporal,   pal_lst_cv,
+                            "CV de LST")
 
+p_prec_cv        <- map_cv(modelo_df, precip_cv_temporal,pal_prec_cv,
+                            "CV de precipitación")
 
-# Composición de figura -----------------------------------------------------------
-
-# Mosaico 4 × 2   (fila superior = magnitud, inferior = CV)
-
-# 1. Definir grilla explícita
+# ---------------------------------------------------------------------------
+# MOSAICO 4 × 2  (arriba magnitud · abajo CV)
+# ---------------------------------------------------------------------------
 layout <- area(
-  t = c(1, 1, 1, 1, 1, 2, 2, 2, 2, 2),
-  l = c(1, 2, 3, 4, 5, 1, 2, 3, 4, 5),
-  b = c(1, 1, 1, 1, 1, 2, 2, 2, 2, 2),
-  r = c(1, 2, 3, 4, 5, 1, 2, 3, 4, 5)
+  t = c(1,1,1,1,1, 2,2,2,2,2),
+  l = c(1,2,3,4,5, 1,2,3,4,5),
+  b = c(1,1,1,1,1, 2,2,2,2,2),
+  r = c(1,2,3,4,5, 1,2,3,4,5)
 )
 
-# 2. Usar un espacio vacío real en posición (5, 2)
 espacio_vacio <- ggplot() + theme_void()
 
-# 3. Componer el mosaico
-p_mosaico <- p_dem_mean + p_slope_mean + p_lst_mean + p_prec_mean + p_mapa_geo +
-             p_dem_cv   + p_slope_cv   + p_lst_cv   + p_prec_cv   + espacio_vacio +
+p_mosaico <- p_dem_media + p_pend_media + p_lst_media + p_prec_media + p_mapa_geo +
+             p_dem_cv    + p_pend_cv    + p_lst_cv    + p_prec_cv    + espacio_vacio +
              plot_layout(design = layout)
 
+# Exportar la figura
 ggsave(
   here::here("Figures", "mosaico_mapa_covariables.png"),
   plot   = p_mosaico,
   width  = 12, height = 6, dpi = 350
 )
-
 ```

@@ -11,11 +11,10 @@ Partiremos de los polígonos UCS con todas las covariables climáticas-topográf
 
 Cada sección está “cacheada” para permitir ejecución modular y reproducible.
 
-
 ```{r configuracion}
 
 #Para exportar como .R plano
-# knitr::purl('06_analisis_SAR_CAR_jerarquicos.qmd')
+# knitr::purl('06_analisis_SAR_CAR__jerarquicos.qmd')
 
 if (!"pacman" %in% rownames(installed.packages())) install.packages("pacman")
 pacman::p_load(
@@ -50,7 +49,6 @@ pacman::p_load(
 theme_set(theme_minimal(base_size = 13))
 
 ```
-
 
 ## 1. Carga de datos
 
@@ -87,111 +85,156 @@ Falta texto introductorio a bloque
 ```{r carga_covariables}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2 · Directorio + lectura rápida de CSV
+# 0 · Ajuste de precisión para divisiones seguras
 # ─────────────────────────────────────────────────────────────────────────────
-dir_cov  <- here::here("Data", "OUT_covars_csv")
-leer_cov <- function(f) readr::read_csv(file.path(dir_cov, f),
-                                        show_col_types = FALSE)
+eps <- 1e-6                         # ε evita CV = σ/0
+safe_log10 <- function(x) log10(pmax(x, eps))
 
-# ---- DEM (media + CV) -------------------------------------------------------
-dem_csv <- leer_cov("OUT_DEM_combinado.csv")
+# ─────────────────────────────────────────────────────────────────────────────
+# 1 · DEM  · media, CV y derivados (todas las variables en español)
+# ─────────────────────────────────────────────────────────────────────────────
+dem_csv <- readr::read_csv(           # <- nombre lógico del objeto CSV
+  here::here("Data/OUT_covars_csv/OUT_DEM_combinado.csv"),
+  show_col_types = FALSE
+)
+
 covars_dem <- st_as_sf(
-  data.frame(dem_csv, geometry = geojsonsf::geojson_sf(dem_csv$.geo)), crs = 4326
+  data.frame(dem_csv, geometry = geojson_sf(dem_csv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(dem_mean = mean) |>
+  # «media» en lugar de «mean»
+  dplyr::rename(dem_media = mean) |>
   dplyr::mutate(
-    dem_cv          = stdDev / pmax(abs(dem_mean), eps),
-    log_dem_cv      = safe_log10(dem_cv),
-    dem_cv_dens     = dem_cv / AREA_HA,
-    log_dem_cv_dens = safe_log10(dem_cv_dens),
-    dplyr::across(c(dem_mean, dem_cv, log_dem_cv,
-                    dem_cv_dens, log_dem_cv_dens),
-                  ~ as.numeric(scale(.x)), .names = "{.col}_z")
+    # Coef. de variación espacial de la elevación
+    dem_cv              = stdDev / pmax(abs(dem_media), eps),
+    log_dem_cv          = safe_log10(dem_cv),
+
+    # Densidad de CV por unidad de superficie
+    dem_cv_densidad     = dem_cv / AREA_HA,
+    log_dem_cv_densidad = safe_log10(dem_cv_densidad),
+
+    # Versión estandarizada (Z-score) de cada métrica
+    across(c(dem_media, dem_cv, log_dem_cv,
+             dem_cv_densidad, log_dem_cv_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)
 
-# ---- SLOPE (media + CV) -----------------------------------------------------
-slope_csv <- leer_cov("OUT_SLOPE_combinado.csv")
-covars_slope <- st_as_sf(
-  data.frame(slope_csv, geometry = geojsonsf::geojson_sf(slope_csv$.geo)), crs = 4326
+# ─────────────────────────────────────────────────────────────────────────────
+# 2 · SLOPE (media & CV espacial)
+# ─────────────────────────────────────────────────────────────────────────────
+slope_cv <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_SLOPE_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_pendiente <- st_as_sf(
+  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(slope_mean = mean) |>
+  dplyr::rename(pendiente_media = mean) |>
   dplyr::mutate(
-    slope_cv          = stdDev / pmax(abs(slope_mean), eps),
-    log_slope_cv      = safe_log10(slope_cv),
-    slope_cv_dens     = slope_cv / AREA_HA,
-    log_slope_cv_dens = safe_log10(slope_cv_dens),
-    dplyr::across(c(slope_mean, slope_cv, log_slope_cv,
-                    slope_cv_dens, log_slope_cv_dens),
-                  ~ as.numeric(scale(.x)), .names = "{.col}_z")
+    pendiente_cv          = stdDev / pmax(abs(pendiente_media), eps),
+    log_pendiente_cv      = safe_log10(pendiente_cv),
+    pendiente_cv_densidad = pendiente_cv / AREA_HA,
+    log_pendiente_cv_densidad = safe_log10(pendiente_cv_densidad),
+    across(c(pendiente_cv, log_pendiente_cv,
+             pendiente_cv_densidad, log_pendiente_cv_densidad,
+             pendiente_media),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)
 
-# ---- LST media espacial -----------------------------------------------------
-lst_mean_csv <- leer_cov("OUT_LST_media_espacial_combinado.csv")
-covars_lst_mean <- st_as_sf(
-  data.frame(lst_mean_csv, geometry = geojsonsf::geojson_sf(lst_mean_csv$.geo)), crs = 4326
+# ─────────────────────────────────────────────────────────────────────────────
+# 3 · LST media espacial (2013-2023)
+# ─────────────────────────────────────────────────────────────────────────────
+lst_media_esp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_LST_media_espacial_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_lst_media <- st_as_sf(
+  data.frame(lst_media_esp, geometry = geojson_sf(lst_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_mean = mean) |>
+  dplyr::rename(lst_media = mean) |>
   dplyr::mutate(
-    log_lst_mean      = safe_log10(lst_mean),
-    lst_mean_dens     = lst_mean / AREA_HA,
-    log_lst_mean_dens = safe_log10(lst_mean_dens),
-    dplyr::across(c(lst_mean, log_lst_mean, lst_mean_dens, log_lst_mean_dens),
-                  ~ as.numeric(scale(.x)), .names = "{.col}_z")
+    log_lst_media          = safe_log10(lst_media),
+    lst_media_densidad     = lst_media / AREA_HA,
+    log_lst_media_densidad = safe_log10(lst_media_densidad),
+    across(c(lst_media, log_lst_media,
+             lst_media_densidad, log_lst_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)  
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4 · LST CV temporal (2013-2023)
+# ─────────────────────────────────────────────────────────────────────────────
+
+lst_cv_temp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_LST_cv_temporal_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_lst_cv_temp <- st_as_sf(
+  data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), crs = 4326
+) |>
+  dplyr::rename(lst_cv_temporal = mean) |>
+  dplyr::mutate(
+    log_lst_cv_temporal          = safe_log10(lst_cv_temporal),
+    lst_cv_temporal_densidad     = lst_cv_temporal / AREA_HA,
+    log_lst_cv_temporal_densidad = safe_log10(lst_cv_temporal_densidad),
+    across(c(lst_cv_temporal, log_lst_cv_temporal,
+             lst_cv_temporal_densidad, log_lst_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)
 
-# ---- LST CV temporal --------------------------------------------------------
-lst_cv_csv <- leer_cov("OUT_LST_cv_temporal_combinado.csv")
-covars_lst_cv <- st_as_sf(
-  data.frame(lst_cv_csv, geometry = geojsonsf::geojson_sf(lst_cv_csv$.geo)), crs = 4326
+# ─────────────────────────────────────────────────────────────────────────────
+# 5 · PRECIP CV temporal  &  6 · PRECIP media espacial (idéntica lógica)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Precip cv temporal
+precip_cv_temp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_PRECIP_cv_temporal_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_precip_cv_temp <- st_as_sf(
+  data.frame(precip_cv_temp, geometry = geojson_sf(precip_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_cv_temp = mean) |>
+  dplyr::rename(precip_cv_temporal = mean) |>
   dplyr::mutate(
-    log_lst_cv_temp      = safe_log10(lst_cv_temp),
-    lst_cv_temp_dens     = lst_cv_temp / AREA_HA,
-    log_lst_cv_temp_dens = safe_log10(lst_cv_temp_dens),
-    dplyr::across(c(lst_cv_temp, log_lst_cv_temp,
-                    lst_cv_temp_dens, log_lst_cv_temp_dens),
-                  ~ as.numeric(scale(.x)), .names = "{.col}_z")
+    log_precip_cv_temporal          = safe_log10(precip_cv_temporal),
+    precip_cv_temporal_densidad     = precip_cv_temporal / AREA_HA,
+    log_precip_cv_temporal_densidad = safe_log10(precip_cv_temporal_densidad),
+    across(c(precip_cv_temporal, log_precip_cv_temporal,
+             precip_cv_temporal_densidad, log_precip_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)   
+
+
+# Precip media espacial
+precip_media_esp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_PRECIP_media_espacial_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_precip_media <- st_as_sf(
+  data.frame(precip_media_esp, geometry = geojson_sf(precip_media_esp$.geo)), crs = 4326
+) |>
+  dplyr::rename(precip_media = mean) |>
+  dplyr::mutate(
+    log_precip_media          = safe_log10(precip_media),
+    precip_media_densidad     = precip_media / AREA_HA,
+    log_precip_media_densidad = safe_log10(precip_media_densidad),
+    across(c(precip_media, log_precip_media,
+             precip_media_densidad, log_precip_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)
 
-# ---- PRECIP CV temporal -----------------------------------------------------
-prcv_csv <- leer_cov("OUT_PRECIP_cv_temporal_combinado.csv")
-covars_prcv <- st_as_sf(
-  data.frame(prcv_csv, geometry = geojsonsf::geojson_sf(prcv_csv$.geo)), crs = 4326
-) |>
-  dplyr::rename(precip_cv_temp = mean) |>
-  dplyr::mutate(
-    log_precip_cv_temp      = safe_log10(precip_cv_temp),
-    precip_cv_temp_dens     = precip_cv_temp / AREA_HA,
-    log_precip_cv_temp_dens = safe_log10(precip_cv_temp_dens),
-    dplyr::across(c(precip_cv_temp, log_precip_cv_temp,
-                    precip_cv_temp_dens, log_precip_cv_temp_dens),
-                  ~ as.numeric(scale(.x)), .names = "{.col}_z")
-  ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)
-
-# ---- PRECIP media espacial --------------------------------------------------
-prmn_csv <- leer_cov("OUT_PRECIP_media_espacial_combinado.csv")
-covars_prmn <- st_as_sf(
-  data.frame(prmn_csv, geometry = geojsonsf::geojson_sf(prmn_csv$.geo)), crs = 4326
-) |>
-  dplyr::rename(precip_mean = mean) |>
-  dplyr::mutate(
-    log_precip_mean      = safe_log10(precip_mean),
-    precip_mean_dens     = precip_mean / AREA_HA,
-    log_precip_mean_dens = safe_log10(precip_mean_dens),
-    dplyr::across(c(precip_mean, log_precip_mean,
-                    precip_mean_dens, log_precip_mean_dens),
-                  ~ as.numeric(scale(.x)), .names = "{.col}_z")
-  ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)
 
 ```
-
 
 Carga datos de geología
 
@@ -255,7 +298,6 @@ geo_sf_wgs84 <- sf::st_read(url_geo, quiet = TRUE) |>
   select(descripcion_geo = Descripcion, era_geo, edad_limpia)
 ```
 
-
 ## 2. Procesamiento
 
 Aquí se asigna a cada UCS la era geológica dominante (por área de intersección), se calculan la densidad de diversidad (Qdens) y su logaritmo (log_Qdens), y se ensamblan todas las covariables estandarizadas en un único objeto modelo_sf. El resultado se inspecciona con glimpse() y se guarda una versión sin geometría (modelo_df) para los modelos no espaciales.
@@ -281,14 +323,20 @@ modelo_sf <- ucs_rao_sf |>
     log_Qdens = log10(Qdens)
   ) |>
   #geologia
-  dplyr::left_join(ucs_geo_df,                      by = "id_creado") |>
+  dplyr::left_join(ucs_geo_df,     by = "id_creado") |>
   #covariables
-  dplyr::left_join(sf::st_drop_geometry(covars_dem),     by = c("id_creado","UCSuelo","AREA_HA")) |>
-  dplyr::left_join(sf::st_drop_geometry(covars_slope),   by = c("id_creado","UCSuelo","AREA_HA")) |>
-  dplyr::left_join(sf::st_drop_geometry(covars_lst_mean),by = c("id_creado","UCSuelo","AREA_HA")) |>
-  dplyr::left_join(sf::st_drop_geometry(covars_lst_cv),  by = c("id_creado","UCSuelo","AREA_HA")) |>
-  dplyr::left_join(sf::st_drop_geometry(covars_prmn),    by = c("id_creado","UCSuelo","AREA_HA")) |>
-  dplyr::left_join(sf::st_drop_geometry(covars_prcv),    by = c("id_creado","UCSuelo","AREA_HA"))
+  left_join(covars_dem            |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_pendiente      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_cv_temp    |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_media      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_cv_temp |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_media   |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo"))
 
 ## Vista rápida -----------------------------------------------------------
 glimpse(modelo_sf, width = 80)
@@ -297,66 +345,15 @@ modelo_df <- sf::st_drop_geometry(modelo_sf)
 
 ```
 
-Validación previa al modelo
-
-```{r}
-
-# 1 · Validez y complejidad geométrica ----------------------------------
-geom_chk <- modelo_sf |>
-  dplyr::mutate(
-    valid_geom   = sf::st_is_valid(geometry),
-    n_vertices   = purrr::map_int(geometry, ~ nrow(sf::st_coordinates(.x))),
-    area_km2     = as.numeric(sf::st_area(geometry)) / 10^6
-  )
-
-dplyr::count(geom_chk, valid_geom)
-summary(geom_chk$n_vertices)
-
-# 2 · Vecinos en geometría *sin simplificar* (rápido con bounding boxes) ----
-nb_raw  <- spdep::poly2nb(geom_chk, queen = TRUE)
-islas   <- which(spdep::card(nb_raw) == 0)
-
-if(length(islas) > 0){
-  message("⚠️  Polígonos sin vecinos (islas): ", length(islas))
-  print(head(geom_chk$id_creado[islas]))
-} else {
-  message("✅ No hay islas; todos los polígonos tienen ≥1 vecino.")
-}
-
-# 3 · Visualización exprés ---------------------------------------------
-
-## a) Complejidad (nº vértices) ----------------------------------------
-ggplot(geom_chk) +
-  geom_sf(aes(fill = n_vertices), colour = NA) +
-  scale_fill_viridis_c(option = "plasma", name = "# vértices") +
-  labs(title = "Complejidad geométrica antes de simplificar") +
-  theme_minimal(base_size = 11)
-
-## b) Islas (si existen) ------------------------------------------------
-if(length(islas) > 0){
-  geom_chk$is_isla <- FALSE
-  geom_chk$is_isla[islas] <- TRUE
-  
-  ggplot(geom_chk) +
-    geom_sf(aes(fill = is_isla), colour = NA) +
-    scale_fill_manual(values = c("FALSE" = "grey85", "TRUE" = "#FF6A00"),
-                      name = "Isla") +
-    labs(title = "Polígonos sin vecinos (queen)") +
-    theme_minimal(base_size = 11)
-}
-
-```
-
-
 ## 3. Diagnóstico de autocorrelación espacial (Moran I y LISA)
 
 Antes de plantear un SAR o un CAR necesitamos evidencias de que la pedodiversidad presenta dependencia espacial que los predictores no expliquen por sí solos. El estadístico de Moran I cumple ese papel: (i) evaluamos la autocorrelación global de log_Qdens; (ii) localizamos los focos High-High / Low-Low con LISA; y (iii) más adelante repetiremos Moran I sobre los residuos del OLS. Si la variable ya muestra autocorrelación pero ésta desaparece tras el OLS, el componente espacial resulta prescindible. Si la autocorrelación persiste en los residuos, indicará la necesidad de un modelo SAR error o CAR; si además existe “efecto derrame” en la respuesta, un SAR lag/Durbin será más apropiado. Por tanto, este diagnóstico guía la selección y la complejidad del modelo espacial que aplicaremos a continuación.
 
 En esta sección:
 
-* Construimos la estructura espacial de contigüidad queen y su matriz de pesos W, estandarizada por filas (style = "W"). 
-* Medimos la autocorrelación global de la variable respuesta (log_Qdens) con el estadístico de Moran I.
-* Exploramos la autocorrelación local mediante LISA (Local Indicators of Spatial Association), clasificando los polígonos en clústeres High-High, Low-Low, High-Low, Low-High y “No sig.” (p > 0.05).
+-   Construimos la estructura espacial de contigüidad queen y su matriz de pesos W, estandarizada por filas (style = "W").
+-   Medimos la autocorrelación global de la variable respuesta (log_Qdens) con el estadístico de Moran I.
+-   Exploramos la autocorrelación local mediante LISA (Local Indicators of Spatial Association), clasificando los polígonos en clústeres High-High, Low-Low, High-Low, Low-High y “No sig.” (p \> 0.05).
 
 ```{r matriz_vecindad}
 
@@ -374,56 +371,27 @@ modelo_sf_s <- sf::st_simplify(
 modelo_sf_s <- sf::st_make_valid(modelo_sf_s)
 
 
-# 3 · Vecindario queen y matriz W ------------------------------------------
+# Matriz de vecindario queen  ------------------------------------------------
 nb_queen <- spdep::poly2nb(modelo_sf_s, queen = TRUE,
                            snap = 1e-06,    # ajusta si hay errores por vértices
                            useC = TRUE)
+
+# Matriz de pesos -------------------------------------------------------------
 lw_queen <- spdep::nb2listw(nb_queen, style = "W", zero.policy = TRUE)
 
 ```
 
-Verificación de las matrices
+Verificación de las matrices: falta aplicarla
 
 ```{r}
 
-# --- 1· Segmentos y centroides --------------------------------------------
-coords_mat <- sf::st_coordinates(sf::st_centroid(modelo_sf_s$geometry))
+# Falta código
 
-seg_df <- purrr::map_dfr(
-  seq_along(nb_queen),
-  \(i){
-    vec <- nb_queen[[i]]
-    if (!length(vec)) return(NULL)           # isla → omitir
-    data.frame(
-      id   = i,
-      x    = coords_mat[i, 1],  y = coords_mat[i, 2],
-      xend = coords_mat[vec, 1], yend = coords_mat[vec, 2]
-    )
-  }
-)
-
-# --- 2· Número de vecinos por polígono (cardinalidad) ----------------------
-modelo_sf_s$n_vecinos <- spdep::card(nb_queen)
-
-# --- 3· Visualización ------------------------------------------------------
-ggplot() +
-  geom_sf(data = modelo_sf_s, aes(fill = n_vecinos), colour = NA) +
-  scale_fill_viridis_c(option = "turbo", name = "# vecinos") +
-  geom_segment(data = seg_df,
-               aes(x = x,  y = y, xend = xend, yend = yend),
-               colour = "black", linewidth = .15, alpha = .4) +
-  geom_point(data = as.data.frame(coords_mat),
-             aes(x = X, y = Y), colour = "white", size = .12) +
-  coord_sf() +
-  theme_void()
 ```
-
-
 
 A continuación se calcula el Moran I global de la variable log_Qdens usando la matriz W definida arriba.
 
-– Si p < 0.05 se confirma autocorrelación positiva y será necesario considerar un modelo espacial (SAR error/lag o CAR).
-– Si p ≥ 0.05 no hay evidencia de dependencia global y un modelo no-espacial podría bastar.
+– Si p \< 0.05 se confirma autocorrelación positiva y será necesario considerar un modelo espacial (SAR error/lag o CAR). – Si p ≥ 0.05 no hay evidencia de dependencia global y un modelo no-espacial podría bastar.
 
 ```{r moranI_Qdens}
 
@@ -489,67 +457,64 @@ Falta texto introductorio
 ```{r visualizacion_LISA}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3 · Paletas coherentes con las que ya definiste
+# 0 · Paletas coherentes con el cuaderno
 # ─────────────────────────────────────────────────────────────────────────────
 pal_continuo <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
 pal_qualitat <- paletteer::paletteer_d("wesanderson::Zissou1Continuous", 5)
 
 col_lisa <- c(
-  "High-High" = pal_continuo[90],
-  "Low-Low"   = pal_continuo[10],
-  "High-Low"  = pal_continuo[70],
-  "Low-High"  = pal_continuo[30],
+  "High-High" = pal_continuo[90],   # rojo
+  "Low-Low"   = pal_continuo[10],   # azul
+  "High-Low"  = pal_continuo[70],   # naranja
+  "Low-High"  = pal_continuo[30],   # celeste
   "No sig."   = "grey90"
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4 · Visualización tripanel (scatter + clústeres + Ii)
-# ─────────────────────────────────────────────────────────────────────────────
-moran_I  <- moran_raw$estimate[["Moran I statistic"]]
-pvalue_I <- formatC(moran_raw$p.value, format = "e", digits = 2)
+## ── 1. Calcula las medias (NO se modifica el objeto) ──────────────────────
+x0 <- mean(modelo_sf_s$log_Qdens, na.rm = TRUE)
+y0 <- mean(modelo_sf_s$lag_raw ,  na.rm = TRUE)
 
+## ── 2. Scatterplot Moran local coherente con la clasificación ─────────────
 p_scatter_lisa <- ggplot(modelo_sf_s,
-                         aes(x = log_Qdens, y = lag_raw,
+                         aes(x = log_Qdens,
+                             y = lag_raw,
                              colour = cluster_raw)) +
-  geom_point(alpha = 0.8, size = 1.2) +
+  geom_point(alpha = 0.8, size = 1) +
   geom_smooth(method = "lm", se = FALSE,
               colour = "black", linewidth = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
-  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey60") +
-  scale_colour_manual(values = col_lisa, name = "") +
-  labs(
-    title    = "Diagrama de dispersión Moran local",
-    subtitle = paste0("Moran I = ", sprintf("%.3f", moran_I),
-                      "  (p = ", pvalue_I, ")"),
-    x = "log₁₀(Q / Área)",
-    y = "Lag espacial"
-  ) +
+  geom_hline(yintercept = y0, linetype = "dashed", colour = "grey60") +
+  geom_vline(xintercept = x0, linetype = "dashed", colour = "grey60") +
+  scale_colour_manual(values = col_lisa, name = "Clúster LISA") +
+  labs(x = "log₁₀(Q / Área)",
+       y = "Lag espacial",
+       title = "Diagrama de dispersión Moran local") +
   theme_minimal(base_size = 11) +
-  theme(legend.position = "bottom")
+  theme(legend.position = "right")
 
+## ── 3. Mapa de clústeres y mapa de Ii (igual que antes) ───────────────────
 p_moran_lisa <- ggplot(modelo_sf_s) +
   geom_sf(aes(fill = cluster_raw), colour = NA) +
   scale_fill_manual(values = col_lisa, na.value = "white",
                     name = "Clúster LISA") +
   labs(title = "Mapa: clústeres LISA de log_Qdens") +
   theme_minimal(base_size = 11) +
-  theme(legend.position = "bottom")
+  theme(legend.position = "right")
 
 p_ii_mapa <- ggplot(modelo_sf_s) +
   geom_sf(aes(fill = Ii_raw), colour = NA) +
-  scale_fill_gradientn(colours = pal_continuo,
-                       name = "Ii", na.value = "white") +
+  scale_fill_viridis_c(name = "Ii", option = "magma",
+                       direction = -1, na.value = "white") +
   labs(title = "Mapa: valor local del estadístico Ii") +
   theme_minimal(base_size = 11)
 
+## ── 4. Tripanel sin leyenda duplicada ─────────────────────────────────────
 p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa +
-                   patchwork::plot_layout(ncol = 3)
+  patchwork::plot_layout(ncol = 3, guides = "auto")
 
 ggplot2::ggsave(
-  here::here("Figures", "moran_local_tripanel.png"),
-  plot   = p_lisa_tripanel,
-  width  = 15, height = 5, dpi = 300
+  filename = here::here("Figures", "moran_local_tripanel.png"),
+  plot     = p_lisa_tripanel,
+  width    = 15, height = 5, dpi = 300
 )
 
 ```
-

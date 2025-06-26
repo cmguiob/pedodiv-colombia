@@ -1,0 +1,392 @@
+## ----config, include = FALSE---------------------------------------------------------------------------
+
+#Para exportar como .R plano
+# knitr::purl('03_analisis_eda_rao_colombia.Rmd')
+
+# Para renderizar el documento
+knitr::opts_chunk$set(echo = TRUE)
+
+# Para cargar librerias se verifica pacman
+if ("pacman" %in% installed.packages() == FALSE) install.packages("pacman")
+
+# Se cargan las librerias
+pacman::p_load(char = c(
+  "here",       # manejo de rutas
+  "skimr",      # estadisticas
+  "e1071",      # estadisticas
+  "sf",         # manipulación de dats espaciales
+  "dplyr",      # procesamiento de data frames
+  "purrr",      # ...
+  "ggplot2",    # graficación
+  "ggdist",     # grafica distribuciones
+  "scales",     # escalas gráficas
+  "ggforce",    # transformaciones especiales
+  "patchwork",  # mosaicos gráficos
+  "paletteer",  # paleta de colores
+  "qs"          #escribe y lee rápidamente objetos R encriptados
+  )
+)
+
+
+# Ajusta tamaño de letra para todo el script
+theme_set(theme_minimal(base_size = 14))
+
+
+
+## ----carga---------------------------------------------------------------------------------------------
+
+# Corre script externo para cargar
+source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
+
+# Asignación de id único para cada polígono
+ucs_sf_4326 <- ucs_rao_sf |> 
+  sf::st_make_valid() |> #valida geometrias problemáticas
+  sf::st_transform(4326) |> # Transforma a crs 4326 
+  dplyr::select(id_creado, UCSuelo, AREA_HA, Q) 
+
+ucs_sf_4326 <- ucs_sf_4326[!st_is_empty(ucs_sf_4326), ]
+
+
+
+## ----variable_respuesta--------------------------------------------------------------------------------
+
+#Se crea una variable Qdens que expresa la densidad de Q
+ucs_rao_sf_4326 <- ucs_sf_4326 |>
+  tidyr::drop_na(Q) |>
+  # se deja un mínimo diferente de cero para trabajar con logaritmos
+  mutate(
+    Q = if_else(Q == 0, 1e-3, Q),              # Evita log(0)
+    Qdens = Q / AREA_HA,                       # Densidad de diversidad
+    Q_squared = Q^2,
+    log_A = log10(AREA_HA),
+    log_Qdens = log10(Qdens)
+    )
+
+
+
+## ----estadisticas--------------------------------------------------------------------------------------
+
+# Se transforma a df para usar en skimr
+ucs_rao_df <- sf::st_drop_geometry(ucs_rao_sf_4326)
+
+# Variables de interés
+vars <- c("Q", "AREA_HA", "Qdens", "log_Qdens")
+
+# Estadística descriptiva rápida
+skimr::skim(ucs_rao_df[, vars])
+
+# Tabla resumen con CV, sesgo y curtosis
+stats_summary <- vars |>
+  setNames(vars) |>
+  lapply(function(var) {
+    x <- ucs_rao_df[[var]]
+    x <- x[!is.na(x)]
+    data.frame(
+      variable = var,
+      cv        = sd(x) / mean(x),
+      skewness  = skewness(x, type = 2),     # tipo 2: Fisher (media = 0 para normal)
+      kurtosis  = kurtosis(x, type = 2) - 3  # restar 3 para curtosis "exceso"
+    )
+  }) |>
+  bind_rows()
+
+print(stats_summary)
+
+
+
+## ----limites_tukey-------------------------------------------------------------------------------------
+
+# Tukey limits for Q
+q25_q <- quantile(ucs_rao_df$Q, 0.25, na.rm = TRUE)
+q75_q <- quantile(ucs_rao_df$Q, 0.75, na.rm = TRUE)
+iqr_q <- q75_q - q25_q
+tukey_low_q  <- q25_q - 1.5 * iqr_q
+tukey_high_q <- q75_q + 1.5 * iqr_q
+
+# Tukey para Q_squared
+q25_q2 <- quantile(ucs_rao_df$Q_squared, 0.25, na.rm = TRUE)
+q75_q2 <- quantile(ucs_rao_df$Q_squared, 0.75, na.rm = TRUE)
+iqr_q2 <- q75_q2 - q25_q2
+tukey_low_q2  <- q25_q2 - 1.5 * iqr_q2
+tukey_high_q2 <- q75_q2 + 1.5 * iqr_q2
+
+# Tukey para AREA_HA
+q25_a <- quantile(ucs_rao_df$AREA_HA, 0.25, na.rm = TRUE)
+q75_a <- quantile(ucs_rao_df$AREA_HA, 0.75, na.rm = TRUE)
+iqr_a <- q75_a - q25_a
+tukey_low_a  <- q25_a - 1.5 * iqr_a
+tukey_high_a <- q75_a + 1.5 * iqr_a
+
+# Tukey para log_A
+q25_la <- quantile(ucs_rao_df$log_A, 0.25, na.rm = TRUE)
+q75_la <- quantile(ucs_rao_df$log_A, 0.75, na.rm = TRUE)
+iqr_la <- q75_la - q25_la
+tukey_low_la  <- q25_la - 1.5 * iqr_la
+tukey_high_la <- q75_la + 1.5 * iqr_la
+
+# Tukey limits for Qdens
+q25_qd <- quantile(ucs_rao_df$Qdens, 0.25, na.rm = TRUE)
+q75_qd <- quantile(ucs_rao_df$Qdens, 0.75, na.rm = TRUE)
+iqr_qd <- q75_qd - q25_qd
+tukey_low_qd  <- q25_qd - 1.5 * iqr_qd
+tukey_high_qd <- q75_qd + 1.5 * iqr_qd
+
+# Tukey para log_Qdens
+q25_lqd <- quantile(ucs_rao_df$log_Qdens, 0.25, na.rm = TRUE)
+q75_lqd <- quantile(ucs_rao_df$log_Qdens, 0.75, na.rm = TRUE)
+iqr_lqd <- q75_lqd - q25_lqd
+tukey_low_lqd  <- q25_lqd - 1.5 * iqr_lqd
+tukey_high_lqd <- q75_lqd + 1.5 * iqr_lqd
+
+
+
+## ----distribuciones------------------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNCIÓN utilitaria  ▸ histo_resp()
+#   • variable (tidy-eval) a graficar
+#   • título y etiqueta eje-X
+#   • fences Tukey (inferior y superior)
+#   • opcional: transformar eje-X (p.e. scientific / comma)
+#   • opcional: binwidth o bins (si necesitas forzar uno)
+# ─────────────────────────────────────────────────────────────────────────────
+
+histo_resp <- function(df, var, title, xlab,
+                       fence_low, fence_hi,
+                       bins = NULL, binwidth = NULL,
+                       x_scale = NULL) {
+
+  g <- ggplot(df, aes({{ var }})) +
+    ggdist::stat_histinterval(
+      fill = "#56B4E9", colour = "black",
+      .width = c(0.5, 0.9),
+      bins = bins, binwidth = binwidth
+    ) +
+    geom_density(aes(y = after_stat(scaled)),
+                 colour = "#FFD700", linewidth = 0.8) +
+    geom_vline(xintercept = fence_low, linetype = "dashed", colour = "grey30") +
+    geom_vline(xintercept = fence_hi,  linetype = "dashed", colour = "grey30") +
+    labs(title = title, x = xlab, y = "Frecuencia") +
+    theme_minimal(base_size = 12)
+
+  if (!is.null(x_scale)) g <- g + x_scale
+  g
+}
+
+# --- Histogramas --------------------------------------------------------------
+p_Q   <- histo_resp(ucs_rao_sf_4326, Q,
+                    "Distribución de Q", "Q",
+                    tukey_low_q, tukey_high_q)
+
+p_Q2  <- histo_resp(ucs_rao_sf_4326, Q_squared,
+                    expression("Distribución en escala " * Q^2), "Q",
+                    tukey_low_q2, tukey_high_q2)
+
+p_A   <- histo_resp(ucs_rao_sf_4326, AREA_HA,
+                    "Distribución de A", "A (ha)",
+                    tukey_low_a, tukey_high_a)
+
+p_logA <- histo_resp(
+  ucs_rao_sf_4326, log_A,
+  expression("Distribución de log"[10] * "(A)"),       # ← título con subíndice
+  expression(log[10](A)),                              # ← eje X con subíndice
+  tukey_low_la, tukey_high_la,
+  x_scale = scale_x_continuous(
+    breaks = scales::trans_breaks("identity", identity),
+    labels = scales::label_comma()
+  )
+)
+
+p_Qdens <- histo_resp(ucs_rao_sf_4326, Qdens,
+                      "Distribución de Q/A", "Q/A",
+                      tukey_low_qd, tukey_high_qd)
+
+p_logQdens <- histo_resp(
+  ucs_rao_sf_4326, log_Qdens,
+  expression("Distribución de log"[10] * "(Q/A)"),     # ← título con subíndice
+  expression(log[10](Q/A)),                            # ← eje X con subíndice
+  tukey_low_lqd, tukey_high_lqd,
+  x_scale = scale_x_continuous(
+    breaks = scales::trans_breaks("identity", identity),
+    labels = scales::label_scientific()
+  )
+)
+
+# --- Mosaico 3 × 2 (sin cambios de estructura) --------------------------------
+p_mosaico_respuesta <- (p_Q | p_Q2) /
+                       (p_A | p_logA) /
+                       (p_Qdens | p_logQdens)
+
+ggsave(
+  here::here("Figures", "mosaico_histogramas_respuesta.png"),
+  plot   = p_mosaico_respuesta,
+  width  = 9, height = 9, dpi = 350
+)
+
+p_mosaico_respuesta
+
+
+
+## ----mapas---------------------------------------------------------------------------------------------
+
+# Paleta continua para todos los mapas --------------------------------------
+
+pal_resp <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+
+# Función genérica de mapa ----------------------------------------------------
+
+map_resp <- function(df, var, title_expr, legend_lab,
+                     trans      = "identity",
+                     breaks     = waiver(),
+                     labels_fn  = waiver()) {
+
+  ggplot(df) +
+    geom_sf(aes(fill = {{ var }}), colour = NA) +
+    scale_fill_gradientn(
+      colours  = pal_resp,
+      na.value = "white",
+      trans    = trans,
+      guide    = guide_colourbar(
+                  direction      = "vertical",
+                  barwidth       = unit(0.25, "cm"),
+                  barheight      = unit(3.5,  "cm"),
+                  title.position = "top"),
+      name     = legend_lab,
+      breaks   = breaks,
+      labels   = labels_fn
+    ) +
+    labs(title = title_expr) +
+    theme_minimal() +
+    theme(legend.justification = c("right", "top"))
+}
+
+# Cuatro mapas ----------------------------------------------------------------
+
+# Q (lineal)
+p_map_Q <- map_resp(
+  ucs_rao_sf_4326, Q,
+  "Mapa de Q", "Q"
+)
+
+# Q²
+p_map_Q2 <- map_resp(
+  ucs_rao_sf_4326, Q,
+  expression("Mapa en escala " * Q^2), "Q",
+  trans = ggforce::power_trans(2)          # Q²
+)
+
+# Q/A (lineal)
+p_map_Qdens <- map_resp(
+  ucs_rao_sf_4326, Qdens,
+  "Mapa de Q/A", "Q/A"
+)
+
+## cortes automáticos dentro del rango de Qdens
+# se toman 4 cortes log-espaciados (base-10) que caigan dentro del rango real
+rng_qd      <- range(ucs_rao_sf_4326$Qdens, na.rm = TRUE)
+log_breaks  <- scales::log_breaks(n = 4)(rng_qd)   # vector de cortes en escala original
+
+p_map_logQdens <- map_resp(
+  ucs_rao_sf_4326, Qdens,
+  expression("Mapa en escala log"[10] * "(Q/A)"), "Q/A",
+  trans     = "log10",
+  breaks    = log_breaks,
+  labels_fn = scales::label_scientific()
+)
+
+# Mosaico 2 × 2 y guardado -----------------------------------------------------
+
+p_mapas_respuesta <- (p_map_Q | p_map_Q2) /
+                     (p_map_Qdens | p_map_logQdens)
+
+ggsave(
+  here::here("Figures", "mapas_respuesta.png"),
+  plot   = p_mapas_respuesta,
+  width  = 8, height = 9, dpi = 350
+)
+
+#p_mapas_respuesta
+
+
+
+
+## ----dispersion_Q_A------------------------------------------------------------------------------------
+
+# ── Scatterplot 1 · Q vs A (escala original) ────────────────────────────────
+p_puntos_Q_A <- ggplot(ucs_rao_sf_4326,
+                       aes(x = AREA_HA, y = Q)) +
+  geom_point(alpha = 0.5, colour = "#56B4E9") +
+  labs(title = "Relación entre Q y A",
+       x = "A (ha)",
+       y = "Q") +
+  theme_minimal(base_size = 12)
+
+# ── Scatterplot 2 · log10(Q) vs log10(A) ────────────────────────────────────
+p_puntos_logQ_logA <- ggplot(ucs_rao_sf_4326,
+                             aes(x = AREA_HA, y = Q)) +
+  geom_point(alpha = 0.5, colour = "#56B4E9") +
+  scale_x_log10(name = expression(log[10](A))) +
+  scale_y_log10(name = expression(log[10](Q))) +
+  labs(title = expression("Relación log"[10] * "(Q) y log"[10] * "(A)")) +
+  theme_minimal(base_size = 12)
+
+# ── Mosaico (dos columnas) y guardado ───────────────────────────────────────
+
+p_dispersion_Q_A <- p_puntos_Q_A | p_puntos_logQ_logA
+
+ggsave(
+  here::here("Figures", "dispersion_Q_A.png"),
+  plot   = p_dispersion_Q_A,
+  width  = 7, height = 5, dpi = 350
+)
+
+
+
+## ------------------------------------------------------------------------------------------------------
+cor(ucs_rao_sf_4326$Q, ucs_rao_sf_4326$AREA_HA, use = "complete.obs", method = "spearman")
+
+
+## ----rao_paisaje---------------------------------------------------------------------------------------
+
+ggplot(ucs_rao_sf_4326 |> tidyr::drop_na(), aes(y = Q, x = PAISAJE)) +
+  stat_histinterval(binwidth = 0.02, 
+                   alpha = 0.7, 
+                   fill = "#56B4E9", 
+                   color = "white", 
+                   slab_color = NA) +
+  geom_boxplot(width = 0.05, outlier.shape = NA, alpha = 0.7, fill = "gray50") +
+  theme_minimal() +
+  labs(title = "Distribución de Rao Q por paisaje",
+       y = "Rao Q", x = "Paisaje") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+
+
+## ----rao_clima-----------------------------------------------------------------------------------------
+
+ggplot(ucs_rao_sf_4326 |> tidyr::drop_na(), aes(y = Q, x = CLIMA_1)) +
+  stat_histinterval(binwidth = 0.02, 
+                   alpha = 0.7, 
+                   fill = "#56B4E9", 
+                   color = "white", 
+                   slab_color = NA) +
+  geom_boxplot(width = 0.05, outlier.shape = NA, alpha = 0.7, fill = "gray50") +
+  theme_minimal() +
+  labs(title = "Distribución de Rao Q por clima",
+       y = "Rao Q", x = "Clima") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+
+## ----rao_humedad---------------------------------------------------------------------------------------
+ggplot(ucs_rao_sf_4326 |> tidyr::drop_na(), aes(y = Q, x = HUMEDAD)) +
+  stat_histinterval(binwidth = 0.02, 
+                   alpha = 0.7, 
+                   fill = "#56B4E9", 
+                   color = "white", 
+                   slab_color = NA) +
+  geom_boxplot(width = 0.05, outlier.shape = NA, alpha = 0.7, fill = "gray50") +
+  theme_minimal() +
+  labs(title = "Distribución de Rao Q por régimen de humedad",
+       y = "Rao Q", x = "Régimen de humedad") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+

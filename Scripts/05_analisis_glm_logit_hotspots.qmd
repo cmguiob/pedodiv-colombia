@@ -48,7 +48,7 @@ theme(base_size = 14)
 
 ## 1. Carga de datos
 
-Carga los datos base de unidades cartográficas de suelos (UCS) y selecciona columnas claves
+Traemos las Unidades Cartográficas de Suelo (UCS) ya depuradas, nos aseguramos de que las geometrías sean válidas y retenemos solo los campos clave (identificador, área y diversidad *Q*).
 
 ```{r carga_pedodiversidad}
 
@@ -56,36 +56,20 @@ Carga los datos base de unidades cartográficas de suelos (UCS) y selecciona col
 source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"), encoding = "UTF-8")
 
 # Asegura geometrías válidas y selecciona columnas clave
-ucs_rao_sf <- ucs_rao_sf |> 
+ucs_sf_4326  <- ucs_rao_sf |> 
   st_make_valid() |> 
-  select(id_creado, UCSuelo, AREA_HA, Q)
+  select(id_creado, UCSuelo, AREA_HA, Q) |>
+  st_transform(4326)
 
 # Elimina geometrías vacías (requerido para procesar con sf_as_ee)
-ucs_rao_sf <- ucs_rao_sf[!st_is_empty(ucs_rao_sf), ]
+ucs_sf_4326 <- ucs_sf_4326[!st_is_empty(ucs_sf_4326), ]
 
-# Transforma a WGS84 (EPSG:4326), requerido por GEE
-ucs_sf_4326 <- st_transform(ucs_rao_sf, 9377)
 
 ```
 
-En este bloque cargamos las tablas *.csv* exportadas desde GEE y construimos objetos **sf** con la geometría de cada UCS. Para cada variable:
+Leemos los CSV generados en los scripts anteriores y calculamos, para cada UCS, medias, coeficientes de variación (CV) y versiones densidad/log de DEM, pendiente, temperatura superficial y precipitación. Dejamos todo estandarizado (z-scores) para que los coeficientes del modelo logístico sean comparables.
 
-1.  **Media** (p. ej. *dem_mean*).
-
-2.  **Coeficiente de variación** CV=σ /∣μ∣+ε
-
-```         
-*Usamos el valor absoluto* de la media para que el CV siga midiendo variabilidad **independientemente** de que la elevación/pediente sea negativa, y añadimos un pequeño\
-ε=10−6 para evitar divisiones por cero.
-```
-
-3.  **CV densificado** (CV / Área).
-
-4.  **Transformaciones log₁₀** → permiten visualizar colas largas y utilizar escalas continuas.
-
-5.  **Estandarizaciones** z → útiles en los modelos (centro = 0, varianza = 1).
-
-> Excepto DEM y pendiente (que pueden tener medias ≤ 0), los demás promedios son positivos; por tanto, no requieren el ajuste ∣μ∣
+Excepto DEM y pendiente (que pueden tener medias ≤ 0), los demás promedios son positivos; por tanto, no requieren el ajuste ∣μ∣
 
 ```{r carga_covariables}
 
@@ -96,26 +80,33 @@ eps <- 1e-6                         # ε evita CV = σ/0
 safe_log10 <- function(x) log10(pmax(x, eps))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1 · DEM (media & CV espacial)
+# 1 · DEM  · media, CV y derivados (todas las variables en español)
 # ─────────────────────────────────────────────────────────────────────────────
-dem_cv <- readr::read_csv(
+dem_csv <- readr::read_csv(           # <- nombre lógico del objeto CSV
   here::here("Data/OUT_covars_csv/OUT_DEM_combinado.csv"),
   show_col_types = FALSE
 )
 
 covars_dem <- st_as_sf(
-  data.frame(dem_cv, geometry = geojson_sf(dem_cv$.geo)), crs = 4326
+  data.frame(dem_csv, geometry = geojson_sf(dem_csv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(dem_mean = mean) |>
+  # «media» en lugar de «mean»
+  dplyr::rename(dem_media = mean) |>
   dplyr::mutate(
-    dem_cv          = stdDev / pmax(abs(dem_mean), eps),
-    log_dem_cv      = safe_log10(dem_cv),
-    dem_cv_dens     = dem_cv / AREA_HA,
-    log_dem_cv_dens = safe_log10(dem_cv_dens),
-    across(c(dem_cv, log_dem_cv, dem_cv_dens, log_dem_cv_dens, dem_mean),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    # Coef. de variación espacial de la elevación
+    dem_cv              = stdDev / pmax(abs(dem_media), eps),
+    log_dem_cv          = safe_log10(dem_cv),
+
+    # Densidad de CV por unidad de superficie
+    dem_cv_densidad     = dem_cv / AREA_HA,
+    log_dem_cv_densidad = safe_log10(dem_cv_densidad),
+
+    # Versión estandarizada (Z-score) de cada métrica
+    across(c(dem_media, dem_cv, log_dem_cv,
+             dem_cv_densidad, log_dem_cv_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2 · SLOPE (media & CV espacial)
@@ -125,19 +116,21 @@ slope_cv <- readr::read_csv(
   show_col_types = FALSE
 )
 
-covars_slope <- st_as_sf(
+covars_pendiente <- st_as_sf(
   data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), crs = 4326
 ) |>
-  dplyr::rename(slope_mean = mean) |>
+  dplyr::rename(pendiente_media = mean) |>
   dplyr::mutate(
-    slope_cv          = stdDev / pmax(abs(slope_mean), eps),
-    log_slope_cv      = safe_log10(slope_cv),
-    slope_cv_dens     = slope_cv / AREA_HA,
-    log_slope_cv_dens = safe_log10(slope_cv_dens),
-    across(c(slope_cv, log_slope_cv, slope_cv_dens, log_slope_cv_dens, slope_mean),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    pendiente_cv          = stdDev / pmax(abs(pendiente_media), eps),
+    log_pendiente_cv      = safe_log10(pendiente_cv),
+    pendiente_cv_densidad = pendiente_cv / AREA_HA,
+    log_pendiente_cv_densidad = safe_log10(pendiente_cv_densidad),
+    across(c(pendiente_cv, log_pendiente_cv,
+             pendiente_cv_densidad, log_pendiente_cv_densidad,
+             pendiente_media),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index, -Q)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3 · LST media espacial (2013-2023)
@@ -150,19 +143,21 @@ lst_media_esp <- readr::read_csv(
 covars_lst_media <- st_as_sf(
   data.frame(lst_media_esp, geometry = geojson_sf(lst_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_mean = mean) |>
+  dplyr::rename(lst_media = mean) |>
   dplyr::mutate(
-    log_lst_mean        = safe_log10(lst_mean),
-    lst_mean_dens       = lst_mean / AREA_HA,
-    log_lst_mean_dens   = safe_log10(lst_mean_dens),
-    across(c(lst_mean, log_lst_mean, lst_mean_dens, log_lst_mean_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_lst_media          = safe_log10(lst_media),
+    lst_media_densidad     = lst_media / AREA_HA,
+    log_lst_media_densidad = safe_log10(lst_media_densidad),
+    across(c(lst_media, log_lst_media,
+             lst_media_densidad, log_lst_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)  
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4 · LST CV temporal (2013-2023)
 # ─────────────────────────────────────────────────────────────────────────────
+
 lst_cv_temp <- readr::read_csv(
   here::here("Data/OUT_covars_csv/OUT_LST_cv_temporal_combinado.csv"),
   show_col_types = FALSE
@@ -171,15 +166,16 @@ lst_cv_temp <- readr::read_csv(
 covars_lst_cv_temp <- st_as_sf(
   data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(lst_cv_temp = mean) |>
+  dplyr::rename(lst_cv_temporal = mean) |>
   dplyr::mutate(
-    log_lst_cv_temp        = safe_log10(lst_cv_temp),
-    lst_cv_temp_dens       = lst_cv_temp / AREA_HA,
-    log_lst_cv_temp_dens   = safe_log10(lst_cv_temp_dens),
-    across(c(lst_cv_temp, log_lst_cv_temp, lst_cv_temp_dens, log_lst_cv_temp_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_lst_cv_temporal          = safe_log10(lst_cv_temporal),
+    lst_cv_temporal_densidad     = lst_cv_temporal / AREA_HA,
+    log_lst_cv_temporal_densidad = safe_log10(lst_cv_temporal_densidad),
+    across(c(lst_cv_temporal, log_lst_cv_temporal,
+             lst_cv_temporal_densidad, log_lst_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5 · PRECIP CV temporal  &  6 · PRECIP media espacial (idéntica lógica)
@@ -194,13 +190,14 @@ precip_cv_temp <- readr::read_csv(
 covars_precip_cv_temp <- st_as_sf(
   data.frame(precip_cv_temp, geometry = geojson_sf(precip_cv_temp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(precip_cv_temp = mean) |>
+  dplyr::rename(precip_cv_temporal = mean) |>
   dplyr::mutate(
-    log_precip_cv_temp        = safe_log10(precip_cv_temp),
-    precip_cv_temp_dens       = precip_cv_temp / AREA_HA,
-    log_precip_cv_temp_dens   = safe_log10(precip_cv_temp_dens),
-    across(c(precip_cv_temp, log_precip_cv_temp, precip_cv_temp_dens, log_precip_cv_temp_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_precip_cv_temporal          = safe_log10(precip_cv_temporal),
+    precip_cv_temporal_densidad     = precip_cv_temporal / AREA_HA,
+    log_precip_cv_temporal_densidad = safe_log10(precip_cv_temporal_densidad),
+    across(c(precip_cv_temporal, log_precip_cv_temporal,
+             precip_cv_temporal_densidad, log_precip_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
   dplyr::select(-.geo, -stdDev, -system.index)   
 
@@ -214,160 +211,160 @@ precip_media_esp <- readr::read_csv(
 covars_precip_media <- st_as_sf(
   data.frame(precip_media_esp, geometry = geojson_sf(precip_media_esp$.geo)), crs = 4326
 ) |>
-  dplyr::rename(precip_mean = mean) |>
+  dplyr::rename(precip_media = mean) |>
   dplyr::mutate(
-    log_precip_mean        = safe_log10(precip_mean),
-    precip_mean_dens       = precip_mean / AREA_HA,
-    log_precip_mean_dens   = safe_log10(precip_mean_dens),
-    across(c(precip_mean, log_precip_mean, precip_mean_dens, log_precip_mean_dens),
-           ~ scale(.x)[, 1], .names = "{.col}_z")
+    log_precip_media          = safe_log10(precip_media),
+    precip_media_densidad     = precip_media / AREA_HA,
+    log_precip_media_densidad = safe_log10(precip_media_densidad),
+    across(c(precip_media, log_precip_media,
+             precip_media_densidad, log_precip_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
   ) |>
-  dplyr::select(-.geo, -stdDev, -system.index)   
+  dplyr::select(-.geo, -stdDev, -system.index)
 
 
 ```
 
 ## 2. Post procesamiento
 
-Este bloque construye la tabla base `modelo_df` **uniendo la pedodiversidad observada con las covariables** derivadas de DEM, SLOPE y LST (coeficiente de variación temporal). Se incluyen métricas transformadas y estandarizadas, útiles para el modelado posterior.
+Este bloque construye la tabla base `modelo_df` **uniendo la pedodiversidad observada con las covariables** derivadas de elevación, pendiente, temperatura superficial y precipitación ( medias y coeficientes de variación temporal). Se incluyen métricas transformadas y estandarizadas, útiles para el modelado posterior. Aquí mismo densificamos la diversidad (Qdens) y su logaritmo, de modo que la respuesta y los predictores queden listos para la etapa de modelado.
 
-```{r join_covars}
+```{r unir_variables}
 
 # Une por id_creado, AREA_HA y UCSuelo
-modelo_df <- ucs_rao_sf |>
+modelo_df <- ucs_sf_4326 |>
   tidyr::drop_na(Q) |>
   mutate(
     Q = if_else(Q == 0, 1e-3, Q),              # Evita log(0)
     Qdens = Q / AREA_HA,                       # Densidad de diversidad
     log_Qdens = log10(Qdens)                   # Transformación log10
   ) |>
-  left_join(covars_dem |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_slope |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_lst_cv_temp  |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_lst_media |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_precip_cv_temp |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo")) |>
-  left_join(covars_precip_media |> st_drop_geometry(), by = c("id_creado", "AREA_HA", "UCSuelo"))
+  left_join(covars_dem            |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_pendiente      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_cv_temp    |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_media      |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_cv_temp |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_media   |> st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo"))
 
 # Verifica que la unión fue exitosa
 glimpse(modelo_df)
 ```
 
-Este bloque depura el conjunto de datos para el ajuste de modelos logit que predicen hotspots de pedodiversidad. Se eliminan observaciones con valores faltantes en covariables clave, se construye la variable binaria `log_Qdens_hot95` (indicador de hotspot), y se conserva únicamente el subconjunto completo de datos para modelado.
+Filtramos UCS completas (sin NA), definimos el percentil 95 de log Qdens como umbral y creamos la variable binaria de hotspot. Este paso delimita la muestra y la respuesta que alimentarán el modelo logístico.
 
-```{r preparacion_modelado_logit}
+```{r preparacion_modelado}
 
-# Filtra UCS con covariables completas (sin NA en las variables seleccionadas)
+## Filtra UCS con covariables completas y crea la variable hotspot ------------
+
 modelo_df_completo <- modelo_df |>
   drop_na(
-    log_Qdens,                                # Diversidad logarítmica densificada
-    dem_mean, slope_mean,                     # Elevación y pendiente media
-    lst_mean, precip_mean,                     # Media de lst y precipitación
-    dem_cv_dens, log_dem_cv_dens,             # Densidad y log de CV de elevación
-    slope_cv_dens, log_slope_cv_dens,         # Densidad y log de CV de pendiente
-    lst_cv_temp, precip_cv_temp,               # CV temporal de LST y precipitación
-    log_lst_cv_temp, log_precip_cv_temp,      # log de CV temporal
-    lst_cv_temp_dens, precip_cv_temp_dens,    # Densidad y log de CV temporal de LST
-    log_lst_cv_temp_dens, log_precip_cv_temp_dens
+    # diversidad
+    log_Qdens,
+    # magnitudes
+    dem_media, pendiente_media, lst_media, precip_media,
+    # CV densificado + sus log-10
+    dem_cv_densidad,  log_dem_cv_densidad,
+    pendiente_cv_densidad,  log_pendiente_cv_densidad,
+    lst_cv_temporal_densidad,  log_lst_cv_temporal_densidad,
+    precip_cv_temporal_densidad, log_precip_cv_temporal_densidad,
+    # CV “puro” (temporal) + log-10
+    lst_cv_temporal,  log_lst_cv_temporal,
+    precip_cv_temporal, log_precip_cv_temporal
   )
 
-
-# Calcula el percentil 95 de diversidad (logarítmica densificada)
+# Umbral P95 para definir hotspot de diversidad logarítmica-densificada
 umbral_hot95 <- quantile(modelo_df_completo$log_Qdens, 0.95, na.rm = TRUE)
 
-# Crea variable binaria de hotspot (1 si es hotspot, 0 si no)
 modelo_df_completo <- modelo_df_completo |>
-  mutate(log_Qdens_hot95 = as.integer(log_Qdens >= umbral_hot95))
+  mutate(hotspot_95 = as.integer(log_Qdens >= umbral_hot95))
 ```
 
-Este bloque crea subconjuntos balanceados para ajustar modelos logit explicando hotspots de diversidad. Se comparan dos estrategias:
+Para evitar un modelo sesgado por la disparidad de clases, tomamos todos los hotspots y seleccionamos aleatoriamente un número cuatro veces mayor de no-hotspots. Así obtenemos un conjunto de entrenamiento equilibrado sobre el cual calcularemos correlaciones y ajustaremos el GLM.
 
--   **Estrategia:** Seleccionar aleatoriamente una proporción de no-hotspots equivalente a 4 veces el número de hotspots, para aproximar una distribución realista de clases.
+```{r subconjuntos_balanceados}
 
-```{r seleccion_subconjuntos_balanceados}
 
-# Cuántos hotspots hay en total
-n_hot <- modelo_df_completo |> filter(log_Qdens_hot95 == 1) |> nrow()
-
-# Selección aleatoria de no-hotspots
-# ontiene hotspots (1) y un subconjunto aleatorio balanceado de no-hotspots (0)
+# contiene hotspots (1) y un subconjunto aleatorio balanceado de no-hotspots (0)
 # Número total de hotspots (clase positiva)
-n_hot <- modelo_df_completo |> filter(log_Qdens_hot95 == 1) |> nrow()
+n_hot   <- modelo_df_completo |> filter(hotspot_95 == 1) |> nrow()
 
 # Número de no-hotspots deseado (proporción 1:3)
-n_nohot <- n_hot * 4
+n_nohot <- n_hot * 4   
 
 # Semilla para reproducibilidad
 set.seed(123)
 
 # Selección de muestra con proporción 1:3
 modelo_df_balanceado <- modelo_df_completo |>
+  mutate(fila = row_number()) |>
   filter(
-    log_Qdens_hot95 == 1 | 
-      row_number() %in% sample(which(log_Qdens_hot95 == 0), n_nohot)
-  )
-
-
+    hotspot_95 == 1 |
+      fila %in% sample(which(hotspot_95 == 0), n_nohot)
+  ) |>
+  select(-fila)
 
 ```
 
 ## 3. Modelado
 
-Seleccion de covariables
+Calculamos la matriz de Pearson entre los candidatos y la mostramos en un correlograma sombreado. Esto nos permite detectar pares altamente correlacionados y decidir qué predictores retener antes de construir el modelo.
 
-```{r }
+```{r analisis_correlacion}
 
 # Umbral de colinealidad (Pearson)
-r_thr <- 0.70      
+r_thr <- 0.70   # umbral |r|    
 
 
-# CANDIDATOS: define la fórmula *antes* de ajustar el modelo ------------------------------
+# Define la fórmula *antes* de ajustar el modelo -----------------------------------------
 
-form_candidatos <- 
-  log_Qdens_hot95 ~ dem_mean_z + slope_mean_z + lst_mean_z + precip_mean_z +
-  log_dem_cv_z + log_slope_cv_z + log_lst_cv_temp_z + log_precip_cv_temp_z +
-  log_dem_cv_dens_z + log_slope_cv_dens_z + 
-  log_lst_cv_temp_dens_z + precip_cv_temp_dens_z
+form_candidatos <-
+  hotspot_95 ~ dem_media_z + pendiente_media_z + lst_media_z + precip_media_z +
+  log_dem_cv_z + log_pendiente_cv_z + log_lst_cv_temporal_z + log_precip_cv_temporal_z +
+  log_dem_cv_densidad_z + log_pendiente_cv_densidad_z +
+  log_lst_cv_temporal_densidad_z + precip_cv_temporal_densidad_z
 
 vars_cand <- all.vars(form_candidatos)[-1]   # excluye la respuesta
 
 
 # Matriz de correlaciones ------------------------------------------------------------------
 
-mat_cor <- 
-  modelo_df_balanceado |>
-  st_drop_geometry()  |>                      # geometría no aporta a la cor
+mat_cor <- modelo_df_balanceado |>
+  st_drop_geometry() |>
   select(all_of(vars_cand)) |>
   cor(use = "pairwise.complete.obs")
 
 
 # Visualización de correlograma -------------------------------------------------------------
 
-# 1 · Colores -------------------------------------------------------------------------------
+#Define paleta de colores
+pal_low  <- "#56B4E9"; pal_mid <- "#F8F0C3FF"; pal_high <- "#FFD700"
 
-col_low  <- "#56B4E9"
-col_mid  <- "#F8F0C3FF"
-col_high <- "#FFD700"
-
-# Heat-map ----------------------------------------------------------------------------------
-p_corr_covs <- ggcorr(mat_cor,
-       low        = col_low,
-       mid        = col_mid,
-       high       = col_high,
-       midpoint   = 0,
-       hjust      = 0.9,
-       size       = 4,
-       color      = "grey60",
-       label      = TRUE,
-       label_alpha = TRUE,
-       label_size  = 3,
-       label_round = 2) +
+# Crea mapa de calor de correlaciones Pearson
+p_corr_covs <- ggcorr(
+  mat_cor,
+  low         = pal_low,
+  mid         = pal_mid,
+  high        = pal_high,
+  midpoint    = 0,
+  hjust       = 0.9,
+  size        = 4,
+  color       = "grey60",
+  label       = TRUE,
+  label_alpha = TRUE,
+  label_size  = 3,
+  label_round = 2
+) +
   ggtitle("Matriz de correlaciones entre predictores (Pearson)") +
   theme_minimal(base_size = 12) +
-  coord_cartesian(clip = "off") +                # ← deja dibujar fuera del panel
-  theme(
-    panel.clip  = "off",                         # idem (≥ ggplot2 3.4)
-    plot.margin = unit(c(5, 5, 5, 90), "pt")    # más espacio a la izquierda
-  )
+  coord_cartesian(clip = "off") +
+  theme(panel.clip = "off",
+        plot.margin = unit(c(5, 5, 5, 90), "pt"))
 
 
 # Guarda la figura
@@ -379,7 +376,7 @@ ggsave(here("Figures", "correlacion_covariables.png"),
 
 ```
 
-Se puede extraer también la tabla ocn los pares de alta correlación
+Se puede extraer también la tabla con los pares de alta correlación
 
 ```{r tabla_correlacion}
 
@@ -398,16 +395,16 @@ pares_altos <-
 print(pares_altos, n = Inf)
 ```
 
-A partir del correlograma, se seleciconaron variables con menor redundancia. Se corre un modelo GLM binomial para explicar los hotspots. Usando hotspots (95%) vs muestra aleatoria balanceada de no-hotspots
+Ajustamos un GLM logístico con la combinación de predictores que superó el filtro de colinealidad. Añadimos las probabilidades predichas y los residuos al data frame, sentando la base para inspecciones gráficas y contrastes de autocorrelación.
 
-```{r ajuste_modelos_logit_B}
+```{r ajuste_modelo}
 
-# Selecciona explícitamente las variables que intervendrán
+# columnas finales del modelo
 vars_glm <- c(
-  "log_Qdens_hot95",
-  "dem_mean_z",  "precip_mean_z",
-  "log_slope_cv_dens_z",
-  "log_lst_cv_temp_dens_z", "precip_cv_temp_dens_z"
+  "hotspot_95",
+  "dem_media_z",  "precip_media_z",
+  "log_pendiente_cv_densidad_z",
+  "log_lst_cv_temporal_densidad_z", "precip_cv_temporal_densidad_z"
 )
 
 # Deja sólo esas columnas + geometría  y elimina cualquier NA
@@ -417,11 +414,12 @@ modelo_df_glm <- modelo_df_balanceado |>
 
 #  Ajusta el logit;  na.action = na.exclude  →  predict() devuelve NAs
 glm_hot_bal <- glm(
-  log_Qdens_hot95 ~ .,
-  data      = st_drop_geometry(modelo_df_glm),  # glm no necesita geometría
+  hotspot_95 ~ .,
+  data      = st_drop_geometry(modelo_df_glm), #glm no necesita geometría
   family    = binomial(),
-  na.action = na.exclude            # conserva longitud original
+  na.action = na.exclude
 )
+
 
 # Añade predicciones y residuos (longitud coincide con modelo_df_glm)
 modelo_df_glm <- modelo_df_glm |>
@@ -430,7 +428,7 @@ modelo_df_glm <- modelo_df_glm |>
     resid_hot_bal = residuals(glm_hot_bal, type = "response")
   )
 
-# 5.  Breve diagnóstico
+# Breve diagnóstico
 summary(glm_hot_bal)
 print(performance::r2_tjur(glm_hot_bal))
 
@@ -448,9 +446,9 @@ El \*modelo B es preferido por su robustez, interpretabilidad y aplicabilidad pr
 
 ### 4.1 Coeficientes (efectos fijos)
 
-Se muestran los coeficientes con sus intervalos de confianza. Coeficientes alejados de 0 y con intervalos estrechos indican mayor significancia y robustez en su efecto sobre la probabilidad de hotspot.
+Graficamos los coeficientes estandarizados y, con effectsize::oddsratio(), añadimos sus odds ratios y sus IC 95 %. Esta lectura conjunta facilita la interpretación práctica de cada predictor y conecta con las curvas marginales que siguen.
 
-```{r}
+```{r visualizacion_coeficientes}
 
 p_coeficientes <- plot_model(glm_hot_bal, 
                              type = "est", 
@@ -475,16 +473,12 @@ ggsave(here("Figures", "coeficientes_logit_b.png"),
 
 ### 4.2 Gráfica de efectos marginales
 
-Estas curvas muestran cómo varía la probabilidad predicha de hotspot a medida que cambia el valor estandarizado de cada covariable, manteniendo las demás constantes. Este bloque genera curvas marginales para las covariables significativas del modelo logit balanceado (modelo B).
+Mostramos cómo varía la probabilidad de hotspot a lo largo del rango estandarizado de cada predictor. Estas curvas ilustran la dirección y la magnitud del efecto detectado en el bloque de coeficientes.
 
-```{r}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1 · Curvas marginales (efectos predichos) para los 5 predictores del modelo
-# ─────────────────────────────────────────────────────────────────────────────
+```{r visualizacion_marginales}
 
 
-# Helper ─ evita repetir theme & estilo de eje Y
+# Helper ─ evita repetir theme & estilo de eje Y -------------------------------------------
 marg_plot <- function(var, xlbl){
   plot_model(glm_hot_bal,
              type  = "pred",
@@ -494,22 +488,19 @@ marg_plot <- function(var, xlbl){
     theme_minimal(base_size = 11)
 }
 
-# ── Generar los cinco gráficos ──────────────────────────────────────────────
-p_dem_mean_z            <- marg_plot("dem_mean_z",
-                                     "Elevación media (z)")
-p_precip_mean_z         <- marg_plot("precip_mean_z",
-                                     "Precipitación media (z)")
-p_log_slope_cv_dens_z   <- marg_plot("log_slope_cv_dens_z",
-                                     "log₁₀ CV pend/Área (z)")
-p_log_lst_cv_temp_dens_z<- marg_plot("log_lst_cv_temp_dens_z",
+# Generar los cinco gráficos --------------------------------------------------------------
+p_dem_media_z            <- marg_plot("dem_media_z", "Elevación media (z)")
+p_precip_media_z         <- marg_plot("precip_media_z", "Precipitación media (z)")
+p_log_slope_cv_dens_z   <- marg_plot("log_pendiente_cv_densidad_z","log₁₀ CV pend/Área (z)")
+p_log_lst_cv_temp_dens_z<- marg_plot("log_lst_cv_temporal_densidad_z",
                                      "log₁₀ CV LST temp/Área (z)")
-p_precip_cv_temp_dens_z <- marg_plot("precip_cv_temp_dens_z",
+p_precip_cv_temp_dens_z <- marg_plot("precip_cv_temporal_densidad_z",
                                      "CV precip temp/Área (z)")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2 · Mosaico 3×2  (la última celda queda vacía para mantener proporción)
-# ─────────────────────────────────────────────────────────────────────────────
-p_curvas_marginales <- p_dem_mean_z + p_precip_mean_z + p_log_slope_cv_dens_z + p_log_lst_cv_temp_dens_z + p_precip_cv_temp_dens_z + plot_layout(ncol = 5) 
+
+# Mosaico 3×2  (la última celda queda vacía para mantener proporción) ----------------------
+
+p_curvas_marginales <- p_dem_media_z + p_precip_media_z + p_log_slope_cv_dens_z + p_log_lst_cv_temp_dens_z + p_precip_cv_temp_dens_z + plot_layout(ncol = 5) 
 
 p_curvas_marginales
 
@@ -528,17 +519,15 @@ El análisis de los residuales del modelo logit permite evaluar qué tan bien se
 
 Existen distintos tipos de residuales en modelos binomiales:
 
-Residuos de respuesta (response): diferencia entre el valor observado (0/1) y la probabilidad predicha.
-
-Residuos de Pearson: estandarizados respecto a la varianza esperada bajo el modelo. Útiles para detectar outliers.
-
-Residuos deviance: basados en la función de verosimilitud. Informan sobre la contribución de cada observación al deviance total.
+* Residuos de respuesta (response): diferencia entre el valor observado (0/1) y la probabilidad predicha.
+* Residuos de Pearson: estandarizados respecto a la varianza esperada bajo el modelo. Útiles para detectar outliers.
+* Residuos deviance: basados en la función de verosimilitud. Informan sobre la contribución de cada observación al deviance total.
 
 En este caso usamos residuos de tipo response, los más directos para interpretar y visualizar espacialmente.
 
 Un residuo de +1 indica que el modelo predijo 0 pero el valor real fue 1 (hotspot observado, no predicho), mientras que un valor de -1 significa que el modelo predijo un hotspot donde no lo había. Valores cercanos a 0 indican buen ajuste.
 
-```{r}
+```{r visualizaicon_residuales}
 
 resid_plot <- function(var, xlbl){
   ggplot(modelo_df_glm,
@@ -549,56 +538,51 @@ resid_plot <- function(var, xlbl){
     theme_minimal(base_size = 11)
 }
 
-p_residuos_1fila <-
-  resid_plot("dem_mean_z",              "Elevación media (z)")          +
-  resid_plot("precip_mean_z",           "Precip. media (z)")            +
-  resid_plot("log_slope_cv_dens_z",     "log₁₀ CV pend/Área (z)")       +
-  resid_plot("log_lst_cv_temp_dens_z",  "log₁₀ CV LST temp/Área (z)")   +
-  resid_plot("precip_cv_temp_dens_z",   "CV precip temp/Área (z)")      +
+p_residuos <- 
+  resid_plot("dem_media_z",                 "Elevación media (z)")        +
+  resid_plot("precip_media_z",              "Precip. media (z)")          +
+  resid_plot("log_pendiente_cv_densidad_z", "log₁₀ CV pend/Área (z)")     +
+  resid_plot("log_lst_cv_temporal_densidad_z","log₁₀ CV LST temp/Área (z)")+
+  resid_plot("precip_cv_temporal_densidad_z","CV precip temp/Área (z)")   +
   plot_layout(ncol = 5)
 
 
-p_residuos_1fila
-
 ggsave(
   here::here("Figures", "mosaico_residuales_logit.png"),
-  plot   = p_residuos_1fila,
+  plot   = p_residuos,
   width  = 13, height = 3.2, dpi = 350
 )
 ```
 
 En esta sección mostramos tres mapas clave para interpretar el modelo logístico:
 
-Hotspots observados: zonas donde la diversidad densificada supera el percentil 95. Sirve como referencia empírica para evaluar el modelo.
-
-Probabilidad predicha de hotspot: valores continuos entre 0 y 1 generados por el modelo. Una alta probabilidad indica que el modelo espera un hotspot allí.
-
-Residuos del modelo: diferencia entre observación y predicción. Permiten identificar zonas donde el modelo sobrestima o subestima la probabilidad de hotspot.
+* Hotspots observados: zonas donde la diversidad densificada supera el percentil 95. Sirve como referencia empírica para evaluar el modelo.
+* Probabilidad predicha de hotspot: valores continuos entre 0 y 1 generados por el modelo. Una alta probabilidad indica que el modelo espera un hotspot allí.
+* Residuos del modelo: diferencia entre observación y predicción. Permiten identificar zonas donde el modelo sobrestima o subestima la probabilidad de hotspot.
 
 La comparación visual entre estas capas permite detectar áreas donde el modelo falla sistemáticamente o donde hay alta incertidumbre, lo que justifica el análisis espacial posterior.
 
-```{r}
+```{r visualizacion_mapas}
 
-pal_zissou <- paletteer_c("grDevices::Zissou 1", 100)
-col_hot  <- pal_zissou[90] 
+# Paleta “Zissou 1” (100 tonos); tomo un rojo intenso para marcar hotspots
+pal_zissou <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+col_hot    <- pal_zissou[90]     # rojo-naranja fuerte
 
-# Extrae los hotspots observados como puntos
-hotspots_obs_sf <- modelo_df_glm |> 
-  filter(log_Qdens_hot95 == 1)
+# ── 1 · Hotspots observados -------------------------------------------------
+# (puntos) sobre el contorno de las UCS del data-set usado en el modelo
+hotspots_obs_sf <- modelo_df_glm |>
+  filter(hotspot_95 == 1)        # ← antes era log_Qdens_hot95
 
-# Mapa 1: solo hotspots observados como puntos, UCS en fondo
 p_mapa_obs <- ggplot() +
-  geom_sf(data = modelo_df_glm, fill = NA, color = "grey90", size = 0.1) +
-  geom_sf(data = hotspots_obs_sf, color = col_hot, size = 2) +
+  geom_sf(data = modelo_df_glm, fill = NA, colour = "grey90", linewidth = .1) +
+  geom_sf(data = hotspots_obs_sf, colour = col_hot, size = 2) +
   labs(title = "Hotspots observados (puntos)") +
-  theme_minimal()
+  theme_minimal(base_size = 11)
 
-# Mapa 2: probabilidad predicha
-# Genera 5 cortes (quintiles) sobre la columna de probabilidad
+# ── 2 · Probabilidad predicha (quintiles) -----------------------------------
 cortes <- classInt::classIntervals(modelo_df_glm$prob_hot_bal,
                                    n = 5, style = "quantile")$brks
 
-# Mapa con los 5 colores
 p_mapa_pred <- ggplot(modelo_df_glm) +
   geom_sf(aes(fill = cut(prob_hot_bal, cortes,
                          include.lowest = TRUE, dig.lab = 3)),
@@ -608,29 +592,29 @@ p_mapa_pred <- ggplot(modelo_df_glm) +
     name   = "Cuantiles de p"
   ) +
   labs(title = "Probabilidad predicha de hotspot (quintiles)") +
-  theme_minimal()
+  theme_minimal(base_size = 11)
 
-# Mapa 3: residuales
+# ── 3 · Residuos del modelo --------------------------------------------------
 p_mapa_resid <- ggplot(modelo_df_glm) +
-  geom_sf(aes(fill = resid_hot_bal), color = NA) +
+  geom_sf(aes(fill = resid_hot_bal), colour = NA) +
   scale_fill_gradientn(
     colours = viridis::viridis(100),
-    limits = c(-0.5, 0.5),
-    name = "Residuo"
+    limits  = c(-0.5, 0.5),
+    name    = "Residuo"
   ) +
   labs(title = "Residuales del modelo") +
-  theme_minimal()
+  theme_minimal(base_size = 11)
 
-# Mosaico con patchwork
-p_mapas_logit <- p_mapa_obs + p_mapa_pred + p_mapa_resid + plot_layout(ncol = 3)
+# ── Mosaico 3×1 --------------------------------------------------------------
+p_mapas_logit <- p_mapa_obs + p_mapa_pred + p_mapa_resid +
+                 patchwork::plot_layout(ncol = 3)
 
-# Guardar la figura
 ggsave(
-  filename = here("Figures", "mosaico_mapa_prediccion_logit.png"),
-  plot = p_mapas_logit,
-  width = 12,
-  height = 5.5,
-  dpi = 350
+  filename = here::here("Figures", "mosaico_mapa_prediccion_logit.png"),
+  plot     = p_mapas_logit,
+  width    = 12,
+  height   = 5.5,
+  dpi      = 350
 )
 
 ```
@@ -639,69 +623,53 @@ ggsave(
 
 A continuación, se evalúa si los residuales del modelo logit presentan autocorrelación espacial, es decir, si las discrepancias entre predicciones y observaciones tienden a agruparse espacialmente. Esta evaluación permite responder preguntas como:
 
-¿Hay zonas del territorio donde el modelo falla sistemáticamente?
+¿Hay zonas del territorio donde el modelo falla sistemáticamente? ¿Podría haber variables omitidas con estructura espacial? ¿Los errores del modelo son aleatorios o siguen patrones regionales?
 
-¿Podría haber variables omitidas con estructura espacial?
-
-¿Los errores del modelo son aleatorios o siguen patrones regionales?
-
-Para ello, se aplica el índice de Moran I, que mide la autocorrelación espacial global entre los valores de una variable (en este caso, los residuales) y su distribución geográfica.
-
-Usaremos:
-
--   Centroides de UCS, para definir la posición espacial.
--   Vecinos por k-vecinos más cercanos (por ejemplo k = 6), que garantiza conectividad y es estable en cuanto a escala.
-
-Se usa la vecindad por distancia pues estamos analizando los residuos de un modelo logit, que fue ajustado sobre un subconjunto. Este subconjunto no cubre el espacio completo ni garantiza contigüidad, y muchas UCS seleccionadas no son vecinas entre sí.
+Para esto, calculamos el Moran I de los residuos para radios crecientes (25 – 300 km) y graficamos su evolución. Esto revela la escala a la que persisten estructuras espaciales no explicadas por el modelo.
 
 ```{r analisis_moran_I}
 
-# 1 · Centroides en CRS 9377 (metros) ----------------------------------------
+## ----analisis_moran_I (corregido y comentado) --------------------------------
+# Objetivo → Moran I global de los residuos a varios radios               ----
+# --------------------------------------------------------------------------- #
+
+
+# 1 · Centroides del subconjunto modelado  (CRS 9377,  m) ------------------
 centros_9377 <- modelo_df_glm |>
-  st_centroid(of_largest_polygon = TRUE) |>
-  st_transform(9377)
-xy <- st_coordinates(centros_9377)
+  sf::st_centroid(of_largest_polygon = TRUE) |>
+  sf::st_transform(9377)                                  # coordenadas métricas
+xy <- sf::st_coordinates(centros_9377)                    # matriz (x, y)
 
-# 2 · Vecindad única hasta el radio máximo -----------------------------------
-r_max  <- 300e3                     # 300 km → m
-nb_max <- dnearneigh(xy, 0, r_max)  # índices de vecinos
-d_max  <- nbdists(nb_max, xy)       # distancias (m)
-
-# 3 · Función protegida contra “sin-vecinos” ---------------------------------
+# 2 · Función protegida: Moran I global para un radio r_km ------------------
 get_MI_fast <- function(r_km){
+  r_m <- r_km * 1e3                                       # km → m
 
-  r_m <- r_km * 1000                # km → m
+  ## 2·1 · Vecindad genuina para ese radio (evita recortes manuales)
+  nb_i <- spdep::dnearneigh(xy, d1 = 0, d2 = r_m)
 
-  # 3·1  Copiamos y recortamos la vecindad
-  nb_i <- nb_max
-  nb_i$neighbours <- Map(\(v, d) v[d <= r_m],
-                         nb_max$neighbours,
-                         d_max)
-
-  # 3·2  ¿algún polígono quedó sin vecinos?
-  if (any(lengths(nb_i$neighbours) == 0)) {
-    return(tibble(dist_km = r_km,
-                  I       = NA_real_,
-                  p.value = NA_real_))
+  ## 2·2 · Algún polígono aislado → devolvemos NA
+  if (any(spdep::card(nb_i) == 0)) {
+    return(tibble::tibble(dist_km = r_km,
+                          I       = NA_real_,
+                          p.value = NA_real_))
   }
 
-  # 3·3  Pesos y Morán I
-  lw_i <- nb2listw(nb_i, style = "W", zero.policy = TRUE)
-  mi   <- moran.test(modelo_df_glm$resid_hot_bal, lw_i,
-                     zero.policy = TRUE)
+  ## 2·3 · Pesos espaciales y prueba de Moran
+  lw_i <- spdep::nb2listw(nb_i, style = "W", zero.policy = TRUE)
+  mi   <- spdep::moran.test(modelo_df_glm$resid_hot_bal,
+                            lw_i, zero.policy = TRUE)
 
-  tibble(dist_km = r_km,
-         I       = mi$estimate["Moran I"],
-         p.value = mi$p.value)
+  tibble::tibble(dist_km = r_km,
+                 I       = unname(mi$estimate["Moran I"]),
+                 p.value = mi$p.value)
 }
 
-# 4 · Ejecutamos para radios 25-300 km ---------------------------------------
+# 3 · Ejecutamos para radios 25-300 km (paso 25 km) ------------------------
 radios_km <- seq(25, 300, by = 25)
-moran_tab <- map_dfr(radios_km, get_MI_fast)
+moran_tab <- purrr::map_dfr(radios_km, get_MI_fast)
 
-# 5 · Gráfico  I  vs  distancia  (p < 0.05 en rojo) --------------------------
-pal_sig <- c(`TRUE`  = "#d73027",   # rojo   = significativo
-             `FALSE` = "grey60")    # gris   = no sig.
+# 4 · Gráfico I vs distancia (rojo = p < 0.05) -----------------------------
+pal_sig <- c(`TRUE` = "#d73027", `FALSE` = "grey90")
 
 g_moran <- ggplot(moran_tab,
                   aes(dist_km, I, colour = p.value < 0.05)) +
@@ -718,17 +686,14 @@ g_moran <- ggplot(moran_tab,
 print(g_moran)
 
 
+
 ```
 
-Moran's I \> 0: indica autocorrelación espacial positiva en los residuos: valores similares (altos o bajos) tienden a agruparse espacialmente.
+Moran's I > 0: indica autocorrelación espacial positiva en los residuos: valores similares (altos o bajos) tienden a agruparse espacialmente.
 
-Z-score elevado y p-valor \< 0.001: este patrón es estadísticamente significativo y no aleatorio.
+Z-score elevado y p-valor < 0.001: este patrón es estadísticamente significativo y no aleatorio.
 
-Magnitud de I: aunque el valor absoluto (≈ 1.25) no es alto, es suficiente para rechazar la hipótesis nula de aleatoriedad espacial.
-
-El modelo no captura completamente la estructura espacial de los hotspots de pedodiversidad.
-
-Hay información espacial residual: zonas donde el modelo sobrepredice o subpredice de forma agrupada.
+Para I > 0 y p-valor < 0.001, el modelo no captura completamente la estructura espacial de los hotspots de pedodiversidad. Hay información espacial residual: zonas donde el modelo sobrepredice (High-High) o subpredice (Low-Low) de forma agrupada.
 
 Esto puede deberse a:
 
@@ -738,7 +703,7 @@ Esto puede deberse a:
 
 Dado este resultado, se justifica implementar modelos espaciales explícitos, como modelos bayesianos con estructuras CAR o SAR (INLA, brms).
 
-```{r}
+```{r analisis_LISA}
 
 # Moran local (LISA)
 moran_local <- localmoran(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
@@ -766,15 +731,13 @@ modelo_df_glm <- modelo_df_glm |>
 
 ```
 
-La figura a continuación resume la estructura espacial de los residuales del modelo, evaluando si existen patrones de agrupamiento no explicados por las covariables:
+Aplicamos el estadístico local de Moran para identificar agrupamientos de residuos alto-alto, bajo-bajo, etc., y los mapeamos junto con el diagrama de dispersión Moran. Con ello cerramos el análisis señalando dónde el modelo deja señales espaciales sin capturar. Observamos:
 
-Diagrama de dispersión de Moran local (izquierda): muestra la relación entre cada residuo y el promedio de sus vecinos (lag espacial). Cada punto está coloreado según el tipo de agrupamiento LISA (e.g., High-High, Low-Low). La pendiente indica el grado de autocorrelación local.
+* Diagrama de dispersión de Moran local (izquierda): muestra la relación entre cada residuo y el promedio de sus vecinos (lag espacial). Cada punto está coloreado según el tipo de agrupamiento LISA (e.g., High-High, Low-Low). La pendiente indica el grado de autocorrelación local.
+* Mapa de agrupamientos LISA (centro): clasifica cada unidad en cinco categorías según la combinación de su residuo y el de sus vecinos. Ayuda a identificar zonas con agrupamiento significativo de errores (e.g., agrupaciones de sobrepredicción).
+* Mapa del estadístico local (Ii) (derecha): representa la magnitud del valor de autocorrelación local, sin categorizarlo. Útil para detectar valores extremos y la intensidad del patrón espacial.
 
-Mapa de agrupamientos LISA (centro): clasifica cada unidad en cinco categorías según la combinación de su residuo y el de sus vecinos. Ayuda a identificar zonas con agrupamiento significativo de errores (e.g., agrupaciones de sobrepredicción).
-
-Mapa del estadístico local (Ii) (derecha): representa la magnitud del valor de autocorrelación local, sin categorizarlo. Útil para detectar valores extremos y la intensidad del patrón espacial.
-
-```{r}
+```{r visualizacion_LISA}
 
 # Define colores personalizados desde paleta Zissou1 (viridis-like)
 pal <- wes_palette("Zissou1", 100, type = "continuous")
