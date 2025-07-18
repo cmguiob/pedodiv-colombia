@@ -31,6 +31,7 @@ pacman::p_load(
   spdep,        # Análisis de dependencia espacial
   scales,       # Transformación de escalas
   classInt,     # cortes con cuantiles 
+  yardstick,
   paletteer,    # acceso a múltiples paletas de colores (ej. viridis, wesanderson)
   googledrive,  # autenticación y manipulación de archivos en Google Drive
   patchwork,    # combinación de gráficos ggplot (p1 + p2)
@@ -513,6 +514,43 @@ ggsave(
 
 ```
 
+
+### 4.3 Validación del modelo
+
+```{r validacion_roc}
+
+
+# 1. Crear tabla limpia con factor nivel 1 como positivo
+roc_df <- data.frame(
+  truth = factor(modelo_df_glm$hotspot_95, levels = c(1, 0)),  # nivel 1 = positivo
+  prob  = modelo_df_glm$prob_hot_bal
+)
+
+# 2. Calcular curva ROC y AUC
+roc_vals <- yardstick::roc_curve(roc_df, truth, prob)
+auc_val  <- yardstick::roc_auc(roc_df, truth, prob)
+
+# 3. Imprimir resultado
+print(auc_val)
+
+# 4. Graficar curva ROC
+p_roc <- autoplot(roc_vals) +
+  labs(
+    title = "Curva ROC del modelo logístico",
+    subtitle = paste("Área bajo la curva (AUC):", round(auc_val$.estimate, 3)),
+    x = "1 - Especificidad (Tasa de falsos positivos)",
+    y = "Sensibilidad (Tasa de verdaderos positivos)"
+  ) +
+  theme_minimal(base_size = 12)
+
+# 5. Mostrar gráfico
+print(p_roc)
+# Guardar
+ggsave(here::here("Figures", "roc_curve_logit.png"),
+       plot = p_roc, width = 6, height = 5, dpi = 350)
+```
+
+
 ### 4.3 Residuales
 
 El análisis de los residuales del modelo logit permite evaluar qué tan bien se ajusta el modelo a los datos observados. En modelos GLM (como el logit), los residuales no deben interpretarse igual que en regresiones lineales clásicas, pero siguen siendo cruciales para detectar mal ajuste, patrones no explicados o estructura espacial remanente.
@@ -621,179 +659,220 @@ ggsave(
 
 ## 5.Autocorrelación espacial de los residuales (Moran I)
 
-A continuación, se evalúa si los residuales del modelo logit presentan autocorrelación espacial, es decir, si las discrepancias entre predicciones y observaciones tienden a agruparse espacialmente. Esta evaluación permite responder preguntas como:
+Para evaluar si los residuos del modelo logístico presentan dependencia espacial no explicada por los predictores, se implementa un análisis global de autocorrelación espacial. Se calcula el estadístico de Moran I mediante permutaciones Monte Carlo, aplicadas a los residuos (resid_hot_bal), a través de una secuencia de bandas de vecindad creciente.
 
-¿Hay zonas del territorio donde el modelo falla sistemáticamente? ¿Podría haber variables omitidas con estructura espacial? ¿Los errores del modelo son aleatorios o siguen patrones regionales?
+Este enfoque usa anillos concéntricos de vecindad (por ejemplo, de 0 a 15 km, de 15 a 30 km, etc.) definidos a partir de los centroides de las unidades cartográficas, proyectados a un sistema de coordenadas en metros (EPSG:9377). En cada anillo, se calcula el valor observado de Moran I y se genera una distribución nula mediante permutaciones aleatorias de los residuos. Esto permite identificar a qué escala (i.e., qué distancia) los residuos están espacialmente correlacionados de forma significativa.
 
-Para esto, calculamos el Moran I de los residuos para radios crecientes (25 – 300 km) y graficamos su evolución. Esto revela la escala a la que persisten estructuras espaciales no explicadas por el modelo.
+Los resultados se resumen en un correlograma que muestra la magnitud y significancia de Moran I en función de la distancia, lo cual guía la selección de una escala óptima para construir el análisis local (LISA) en el siguiente paso.
 
 ```{r analisis_moran_I}
 
-## ----analisis_moran_I (corregido y comentado) --------------------------------
-# Objetivo → Moran I global de los residuos a varios radios               ----
-# --------------------------------------------------------------------------- #
+## --- Hiperparámetros a modificar----------------------------------------------
 
+dist_max_km <- 400     # distancia máxima (km)
+step_km     <- 15      # ancho banda (km)  → anillo = (d , d+step]
+nsim_mc     <- 200     # permutaciones Monte-Carlo
 
-# 1 · Centroides del subconjunto modelado  (CRS 9377,  m) ------------------
-centros_9377 <- modelo_df_glm |>
-  sf::st_centroid(of_largest_polygon = TRUE) |>
-  sf::st_transform(9377)                                  # coordenadas métricas
-xy <- sf::st_coordinates(centros_9377)                    # matriz (x, y)
+## --- Centroides en CRS métrico (EPSG 9377) ----------------------------------
 
-# 2 · Función protegida: Moran I global para un radio r_km ------------------
-get_MI_fast <- function(r_km){
-  r_m <- r_km * 1e3                                       # km → m
+centros_9377 <- modelo_df_glm |>          # objeto del logit
+  sf::st_point_on_surface() |>            # centroide interno
+  sf::st_transform(9377)
 
-  ## 2·1 · Vecindad genuina para ese radio (evita recortes manuales)
-  nb_i <- spdep::dnearneigh(xy, d1 = 0, d2 = r_m)
+xy <- sf::st_coordinates(centros_9377)    # matriz (x , y)
 
-  ## 2·2 · Algún polígono aislado → devolvemos NA
+## --- Secuencia de anillos dnearneigh() ---------------------------------------
+
+breaks_m <- seq(0, dist_max_km*1000, by = step_km*1000)     # bordes anillos
+mid_km   <- head(breaks_m, -1)/1000 + step_km/2             # centro banda km
+
+## --- Bucle secuencial: calcula Moran I por banda -----------------------------
+
+corr_tab <- lapply(seq_along(mid_km), \(i){
+
+  nb_i <- spdep::dnearneigh(xy, d1 = breaks_m[i], d2 = breaks_m[i+1])
+
+  # Si algún polígono queda sin vecinos → NA
   if (any(spdep::card(nb_i) == 0)) {
-    return(tibble::tibble(dist_km = r_km,
-                          I       = NA_real_,
-                          p.value = NA_real_))
+    return(tibble(dist_km = mid_km[i], I = NA, p = NA))
   }
 
-  ## 2·3 · Pesos espaciales y prueba de Moran
   lw_i <- spdep::nb2listw(nb_i, style = "W", zero.policy = TRUE)
-  mi   <- spdep::moran.test(modelo_df_glm$resid_hot_bal,
-                            lw_i, zero.policy = TRUE)
+  
+# --- Monte-Carlo -------------------------------------------------------------
+  #   • Mantiene W fija
+  #   • Permuta TODA la serie de residuos entre polígonos
+  #   • Calcula I para cada permutación -> dist. nula
+# -----------------------------------------------------------------------------
+  mc <- spdep::moran.mc(modelo_df_glm$resid_hot_bal, lw_i,
+                        nsim = nsim_mc, zero.policy = TRUE)
 
-  tibble::tibble(dist_km = r_km,
-                 I       = unname(mi$estimate["Moran I"]),
-                 p.value = mi$p.value)
-}
+  tibble(dist_km = mid_km[i], I = mc$statistic, p = mc$p.value)
+}) |> dplyr::bind_rows()
 
-# 3 · Ejecutamos para radios 25-300 km (paso 25 km) ------------------------
-radios_km <- seq(25, 300, by = 25)
-moran_tab <- purrr::map_dfr(radios_km, get_MI_fast)
+## --- Preparación para el gráfico --------------------------------------------
+corr_tab <- corr_tab |>
+  mutate(p_sym = ifelse(p > .5, 1 - p, p),                # bilateral
+         sig   = factor(ifelse(is.na(I), "NA",
+                          ifelse(p_sym < .05, "Si", "No")),
+                        levels = c("Si", "No", "NA")))
 
-# 4 · Gráfico I vs distancia (rojo = p < 0.05) -----------------------------
-pal_sig <- c(`TRUE` = "#d73027", `FALSE` = "grey90")
+colores <- c("Si"="#56B4E9", "No"="#FFD700", "NA"="gray90")
 
-g_moran <- ggplot(moran_tab,
-                  aes(dist_km, I, colour = p.value < 0.05)) +
-  geom_line(na.rm = TRUE) +
-  geom_point(size = 2, na.rm = TRUE) +
-  scale_colour_manual(values = pal_sig,
-                      labels = c("No", "Sí"),
-                      name   = "p < 0.05") +
-  labs(x = "Radio (km)",
-       y = "Moran I global",
-       title = "Autocorrelación espacial de los residuos según distancia") +
-  theme_minimal()
+## ---· Correlograma ggplot ---------------------------------------------------
 
-print(g_moran)
+g_moran_corr <- ggplot(corr_tab, aes(dist_km, I)) +
+  geom_line(colour = "black") +
+  geom_point(aes(colour = sig), size = 3) +
+  scale_colour_manual(values = colores, name = "p < 0.05") +
+  geom_hline(yintercept = -1/(nrow(modelo_df_glm)-1),
+             linetype = "dashed", colour = "grey40") +
+  labs(title = "Correlograma de Moran I Monte-Carlo",
+       x = "Distancia banda central (km)",
+       y = "Moran I de los residuos") +
+  theme_minimal(base_size = 12)
 
-
+# Supongamos que tu ggplot se llama g_correlograma
+ggsave(
+  filename = here::here("Figures", "correlograma_moran_mc.png"), 
+  plot     = g_moran_corr,
+  width    = 8,      # pulgadas
+  height   = 4,      
+  dpi      = 350
+)
 
 ```
 
-Moran's I > 0: indica autocorrelación espacial positiva en los residuos: valores similares (altos o bajos) tienden a agruparse espacialmente.
+A partir del análisis anterior, se selecciona la distancia óptima (la que maximiza un Moran I significativo) para definir vecindarios espaciales. Con esta matriz de pesos espaciales, se calcula el estadístico local de Moran (LISA) sobre los residuos del modelo logístico.
 
-Z-score elevado y p-valor < 0.001: este patrón es estadísticamente significativo y no aleatorio.
+El objetivo es identificar agrupamientos espaciales localizados, donde los residuos son altos o bajos y se rodean de vecinos similares. Se clasifican en cinco tipos de asociación espacial: High-High, Low-Low, High-Low, Low-High y No significativo, en función del signo del residuo, el residuo promedio de los vecinos (lag), y la significancia local (p < 0.001).
 
-Para I > 0 y p-valor < 0.001, el modelo no captura completamente la estructura espacial de los hotspots de pedodiversidad. Hay información espacial residual: zonas donde el modelo sobrepredice (High-High) o subpredice (Low-Low) de forma agrupada.
-
-Esto puede deberse a:
-
--   Covariables espaciales faltantes o mal representadas.
--   Efectos espaciales latentes (estructura de paisaje, geología, clima).
--   Posible efecto MAUP (problemas por escala y forma de unidades espaciales).
-
-Dado este resultado, se justifica implementar modelos espaciales explícitos, como modelos bayesianos con estructuras CAR o SAR (INLA, brms).
+Este análisis permite detectar zonas donde el modelo subestima o sobrestima consistentemente la pedodiversidad, revelando patrones no capturados por las covariables ambientales y que podrían requerir modelado espacial explícito (p. ej., SAR, CAR, o INLA).
 
 ```{r analisis_LISA}
 
-# Moran local (LISA)
-moran_local <- localmoran(modelo_df_glm$resid_hot_bal, listw = pesos, zero.policy = TRUE)
+# 1) Encuentra la distancia óptima (km) con mayor I y p < 0.05
+r_opt_km <- corr_tab %>%
+  filter(!is.na(p), p < 0.05) %>%
+  slice_max(I, n = 1) %>%
+  pull(dist_km)
 
-# Calcula el lag espacial de los residuos (para el scatterplot)
-modelo_df_glm <- modelo_df_glm |>
+r_opt_m <- r_opt_km * 1000  # pasa a metros
+
+# 2) Crea la vecindad dnearneigh y lista de pesos
+nb_opt <- dnearneigh(xy, d1 = 0, d2 = r_opt_m)
+pesos  <- nb2listw(nb_opt, style = "W", zero.policy = TRUE)
+
+# 3) Calcula Moran local (LISA)
+moran_local <- localmoran(
+  modelo_df_glm$resid_hot_bal,
+  listw       = pesos,
+  zero.policy = TRUE
+)
+
+modelo_df_glm <- modelo_df_glm %>%
   mutate(
-    local_moran_I = moran_local[, 1],
-    p_valor_local = moran_local[, 5],
-    lag_resid = lag.listw(pesos, resid_hot_bal)
-  )
-
-# Clasifica tipo de agrupamiento espacial
-modelo_df_glm <- modelo_df_glm |>
+    local_moran_I = moran_local[, "Ii"],    # estadístico local
+    p_valor_local = moran_local[, 5],       # 5ª columna → p-valor
+    lag_resid     = lag.listw(pesos, resid_hot_bal)
+  ) %>%
   mutate(
     cluster_tipo = case_when(
-      resid_hot_bal > 0 & lag_resid > 0 ~ "High-High",
-      resid_hot_bal < 0 & lag_resid < 0 ~ "Low-Low",
-      resid_hot_bal > 0 & lag_resid < 0 ~ "High-Low",
-      resid_hot_bal < 0 & lag_resid > 0 ~ "Low-High",
-      TRUE ~ "No significativo"
+      resid_hot_bal >  0 & lag_resid >  0 ~ "High-High",
+      resid_hot_bal <  0 & lag_resid <  0 ~ "Low-Low",
+      resid_hot_bal >  0 & lag_resid <  0 ~ "High-Low",
+      resid_hot_bal <  0 & lag_resid >  0 ~ "Low-High",
+      TRUE                                 ~ "No significativo"
     ),
-    cluster_tipo = ifelse(p_valor_local > 0.05, "No significativo", cluster_tipo)
+    cluster_tipo = if_else(p_valor_local > 0.001, "No significativo", cluster_tipo)
   )
 
 ```
 
-Aplicamos el estadístico local de Moran para identificar agrupamientos de residuos alto-alto, bajo-bajo, etc., y los mapeamos junto con el diagrama de dispersión Moran. Con ello cerramos el análisis señalando dónde el modelo deja señales espaciales sin capturar. Observamos:
+En este bloque se resumen visualmente los resultados del análisis LISA, en tres componentes clave:
 
-* Diagrama de dispersión de Moran local (izquierda): muestra la relación entre cada residuo y el promedio de sus vecinos (lag espacial). Cada punto está coloreado según el tipo de agrupamiento LISA (e.g., High-High, Low-Low). La pendiente indica el grado de autocorrelación local.
-* Mapa de agrupamientos LISA (centro): clasifica cada unidad en cinco categorías según la combinación de su residuo y el de sus vecinos. Ayuda a identificar zonas con agrupamiento significativo de errores (e.g., agrupaciones de sobrepredicción).
-* Mapa del estadístico local (Ii) (derecha): representa la magnitud del valor de autocorrelación local, sin categorizarlo. Útil para detectar valores extremos y la intensidad del patrón espacial.
+* Un diagrama de dispersión entre los residuos (resid_hot_bal) y su promedio espacial entre vecinos (lag), coloreado por tipo de agrupamiento LISA. Se anota también el valor máximo de Moran I global y la distancia a la cual se observó.
+* Un mapa de agrupamientos LISA, que muestra la distribución geográfica de los tipos High-High, Low-Low, etc., resaltando los residuos con estructura espacial significativa.
+* Un mapa de los valores locales del estadístico Ii, que cuantifica la fuerza de la autocorrelación para cada unidad.
+
+Esta visualización proporciona una base sólida para interpretar errores espaciales sistemáticos y guiar la construcción de modelos espaciales más complejos en pasos posteriores del proyecto.
 
 ```{r visualizacion_LISA}
 
-# Define colores personalizados desde paleta Zissou1 (viridis-like)
-pal <- wes_palette("Zissou1", 100, type = "continuous")
+# 1. Cargamos la paleta Zissou1 (100 tonos continuos)  
+pal_zissou <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+
+# 2. Asignamos los colores según tus clusters
 colores_lisa <- c(
-  "High-High"        = pal[90],   # rojo intenso
-  "Low-Low"          = pal[10],   # azul oscuro
-  "High-Low"         = pal[70],   # naranja
-  "Low-High"         = pal[30],   # celeste
-  "No significativo" = "grey90"   # gris neutro
+  "High-High"        = pal_zissou[90],  # rojo intenso Zissou
+  "Low-Low"          = pal_zissou[10],  # azul Zissou
+  "High-Low"         = pal_zissou[70],  # naranja Zissou
+  "Low-High"         = pal_zissou[30],  # celeste Zissou
+  "No significativo" = "gray90"         # gris neutro
 )
 
-# Gráfico 1: Scatterplot de Moran local coloreado por tipo de agrupamiento
-p_scatter_lisa <- ggplot(modelo_df_glm, aes(x = resid_hot_bal, y = lag_resid)) +
-  geom_point(aes(color = cluster_tipo), alpha = 0.8, size = 1.5) +
-  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
+# 3. Extraemos el valor máximo significativo de Moran I y su distancia
+moran_max <- corr_tab %>%
+  filter(!is.na(p), p < 0.05) %>%
+  slice_max(I, n = 1)
+
+# 4. Texto a mostrar en el scatterplot
+moran_text <- sprintf("Moran I global = %.3f\nDistancia = %d km",
+                      moran_max$I, round(moran_max$dist_km))
+
+# 5. Scatterplot Moran local con anotación
+p_scatter_lisa <- ggplot(modelo_df_glm, aes(resid_hot_bal, lag_resid, color = cluster_tipo)) +
+  geom_point(alpha = .8, size = 1.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = .5) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey60") +
   scale_color_manual(values = colores_lisa) +
+  annotate("text", 
+           x = Inf, y = -Inf, hjust = 1.1, vjust = -0.5, 
+           label = moran_text, 
+           size = 4, fontface = "italic", color = "black") +
   labs(
     title = "Diagrama de dispersión Moran local",
-    x = "Residuo del modelo",
-    y = "Lag espacial",
-    color = "Tipo de agrupamiento"
+    x     = "Residuo del modelo",
+    y     = "Lag espacial",
+    color = "Tipo de cluster"
   ) +
   theme_minimal()
 
-# Gráfico 2: Mapa LISA de agrupamientos espaciales
+# 6. Mapa de clusters LISA
 p_moran_lisa <- ggplot(modelo_df_glm) +
   geom_sf(aes(fill = cluster_tipo), color = NA) +
   scale_fill_manual(values = colores_lisa, na.value = "white") +
-  labs(title = "Mapa: agrupamientos LISA (residuales)",
-       fill = "Tipo de agrupamiento") +
+  labs(
+    title = "Mapa: agrupamientos LISA (residuales)",
+    fill  = "Tipo de cluster"
+  ) +
   theme_minimal()
 
-# Gráfico 3: Mapa de valores Ii (magnitude de autocorrelación local)
+# 7. Mapa de magnitud Ii
 p_ii_mapa <- ggplot(modelo_df_glm) +
   geom_sf(aes(fill = local_moran_I), color = NA) +
-  scale_fill_viridis_c(name = "Ii", option = "magma", direction = -1) +
-  labs(title = "Mapa: valor del estadístico local (Ii)") +
+  scale_fill_viridis_c(
+    name      = "Ii",
+    option    = "magma",
+    direction = -1,
+    na.value  = "white"
+  ) +
+  labs(title = "Mapa: valor local del estadístico Ii") +
   theme_minimal()
 
-# Composición de los tres gráficos
-p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa + 
+# 8. Composición tripanel
+p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa +
   plot_layout(ncol = 3)
 
-# Mostrar y guardar
-print(p_lisa_tripanel)
-
+# 9. Exportación final
 ggsave(
   here::here("Figures", "moran_local_composicion_logit.png"),
-  plot = p_lisa_tripanel,
-  width = 15,
+  plot   = p_lisa_tripanel,
+  width  = 15,
   height = 5,
-  dpi = 300
+  dpi    = 350
 )
-
 ```
 
 En este contexto, un Low-Low indica un conjunto de unidades cartográficas de suelo (UCS) cuyos residuos son consistentemente negativos, y además están rodeadas por otras UCS con residuos negativos, de manera significativa.

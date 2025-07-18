@@ -1,0 +1,547 @@
+---
+title: "Modelos para dependencia y heterogeneidad espacial"
+author: "Carlos M. Guío Blanco"
+format: html
+editor: visual
+---
+
+Este cuaderno documenta el paso desde el análisis exploratorio hacia el **modelado continuo y espacialmente explícito** de la pedodiversidad (respuesta: `log_Qdens`, es decir, log₁₀ (Q / Área)).\
+
+Partiremos de los polígonos UCS con todas las covariables climáticas-topográficas ya integradas, generaremos la matriz de pesos por **contigüidad queen row-standardized**, y compararemos distintos modelos espaciales—SAR error/lag, variantes Durbin, SEM—hasta llegar a un **modelo CAR bayesiano con INLA** y a un **modelo jerárquico con efectos aleatorios por era geológica**.\
+
+Cada sección está “cacheada” para permitir ejecución modular y reproducible.
+
+```{r configuracion}
+
+#Para exportar como .R plano
+# knitr::purl('06_analisis_SAR_CAR__jerarquicos.qmd')
+
+if (!"pacman" %in% rownames(installed.packages())) install.packages("pacman")
+pacman::p_load(
+  here,         # manejo de rutas relativas al proyecto
+  remotes,      # instalar paquetes desde GitHub (si llegamos a necesitarlos)
+  sf,           # lectura y manipulación de objetos espaciales vectoriales
+  dplyr,        # verbos de manipulación de data frames (filter, mutate, joins)
+  tidyr,        # pivoteo y desanidado de datos (pivot_longer, unnest, etc.)
+  readr,        # lectura/escritura rápida de archivos CSV
+  geojsonsf,    # GeoJSON ↔ sf rápido (geojson_sf)
+  rmapshaper,   # Simplificación de geometrías
+  stringr,      # Manipulación d textos
+  ggplot2,      # sistema de gráficos
+  ggdist,       # distribuciones y visuales tipo half-eye / histinterval
+  patchwork,    # combinación de gráficos ggplot (p1 + p2)
+  paletteer,    # acceso a múltiples paletas (viridis, wesanderson, etc.)
+  scales,       # helpers de ejes y transformaciones (log10, percentiles)
+  grid,         # utilidades de bajo nivel para gráficos (layouts, grobs)
+  GGally,       # correlogramas y extensiones ggplot
+  sjPlot,       # visualización de modelos (coeficientes, efectos marginales)
+  spdep,        # estructuras de vecinos y pruebas de autocorrelación
+  spatialreg,   # modelos SAR / SEM / SDM / SDEM / SARAR
+  performance,  # métricas de ajuste (pseudo-R², VIF, etc.)
+  classInt,     # cortes de intervalos (quantile, jenks, etc.)
+  INLA,         # modelos Bayesianos rápidos (CAR/BYM/Leroux)
+  lme4,         # modelos mixtos jerárquicos (GLMM)
+  MuMIn,        # R² marginal/condicional para modelos mixtos
+  googledrive   # autenticación y manejo de archivos en Google Drive
+)
+
+theme_set(theme_minimal(base_size = 13))
+
+```
+
+## 1. Carga de datos
+
+Importamos la capa de Unidades Cartográficas de Suelo (UCS) previamente armonizada. Al validar geometrías y quedarnos con los campos clave (`id_creado`, `UCSuelo`, `AREA_HA`, `Q`) dejamos una versión ligera pero completa que servirá de eje para unir, más adelante, las covariables ambientales y la geología.
+
+```{r carga_ucs}
+
+# Capa cruda tal como sale de la función externa ---------------
+source(here::here("Scripts", "00_funcion_carga_ucs_procesadas_qs.R"),
+       encoding = "UTF-8")
+
+
+# Versión “limpia” en WGS-84 ------------------------------------------------
+ucs_sf_4326 <- ucs_rao_sf |>
+  sf::st_make_valid() |>
+  sf::st_transform(4326) |>
+  dplyr::select(id_creado, UCSuelo, AREA_HA, Q)
+
+
+```
+
+Definimos aquí constantes y funciones auxiliares de uso recurrente. El pequeño ε protege división o logaritmos frente a ceros, mientras que las paletas garantizan una estética uniforme en todas las figuras del cuaderno. Al declararlas una sola vez evitamos redefiniciones y mantenemos la coherencia visual.
+
+```{r utilidades}
+
+# Ajuste de precisión para divisiones seguras
+eps        <- 1e-6                                # ε evita CV = σ/0
+safe_log10 <- function(x) log10(pmax(x, eps))     # log10 con piso
+
+# Paletas continuas y discretas
+pal_continuo <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+pal_qualitat <- paletteer::paletteer_d("wesanderson::Zissou1", 5)
+```
+
+En los siguientes sub-bloques leemos los CSV de covariables exportados desde GEE y calculamos métricas derivadas (coeficiente de variación, densidades, transformaciones log y estandarizaciones z). Al final de la sección cada conjunto (`covars_*`) queda listo para unirse a la tabla base de UCS, proporcionando la dimensión ambiental necesaria para los modelos espaciales.
+
+```{r carga_covariables}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1 · DEM  · media, CV y derivados (todas las variables en español)
+# ─────────────────────────────────────────────────────────────────────────────
+dem_csv <- readr::read_csv(           # <- nombre lógico del objeto CSV
+  here::here("Data/OUT_covars_csv/OUT_DEM_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_dem <- st_as_sf(
+  data.frame(dem_csv, geometry = geojson_sf(dem_csv$.geo)), crs = 4326
+) |>
+  # «media» en lugar de «mean»
+  dplyr::rename(dem_media = mean) |>
+  dplyr::mutate(
+    # Coef. de variación espacial de la elevación
+    dem_cv              = stdDev / pmax(abs(dem_media), eps),
+    log_dem_cv          = safe_log10(dem_cv),
+
+    # Densidad de CV por unidad de superficie
+    dem_cv_densidad     = dem_cv / AREA_HA,
+    log_dem_cv_densidad = safe_log10(dem_cv_densidad),
+
+    # Versión estandarizada (Z-score) de cada métrica
+    across(c(dem_media, dem_cv, log_dem_cv,
+             dem_cv_densidad, log_dem_cv_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2 · SLOPE (media & CV espacial)
+# ─────────────────────────────────────────────────────────────────────────────
+slope_cv <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_SLOPE_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_pendiente <- st_as_sf(
+  data.frame(slope_cv, geometry = geojson_sf(slope_cv$.geo)), crs = 4326
+) |>
+  dplyr::rename(pendiente_media = mean) |>
+  dplyr::mutate(
+    pendiente_cv          = stdDev / pmax(abs(pendiente_media), eps),
+    log_pendiente_cv      = safe_log10(pendiente_cv),
+    pendiente_cv_densidad = pendiente_cv / AREA_HA,
+    log_pendiente_cv_densidad = safe_log10(pendiente_cv_densidad),
+    across(c(pendiente_cv, log_pendiente_cv,
+             pendiente_cv_densidad, log_pendiente_cv_densidad,
+             pendiente_media),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3 · LST media espacial (2013-2023)
+# ─────────────────────────────────────────────────────────────────────────────
+lst_media_esp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_LST_media_espacial_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_lst_media <- st_as_sf(
+  data.frame(lst_media_esp, geometry = geojson_sf(lst_media_esp$.geo)), crs = 4326
+) |>
+  dplyr::rename(lst_media = mean) |>
+  dplyr::mutate(
+    log_lst_media          = safe_log10(lst_media),
+    lst_media_densidad     = lst_media / AREA_HA,
+    log_lst_media_densidad = safe_log10(lst_media_densidad),
+    across(c(lst_media, log_lst_media,
+             lst_media_densidad, log_lst_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)  
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4 · LST CV temporal (2013-2023)
+# ─────────────────────────────────────────────────────────────────────────────
+
+lst_cv_temp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_LST_cv_temporal_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_lst_cv_temp <- st_as_sf(
+  data.frame(lst_cv_temp, geometry = geojson_sf(lst_cv_temp$.geo)), crs = 4326
+) |>
+  dplyr::rename(lst_cv_temporal = mean) |>
+  dplyr::mutate(
+    log_lst_cv_temporal          = safe_log10(lst_cv_temporal),
+    lst_cv_temporal_densidad     = lst_cv_temporal / AREA_HA,
+    log_lst_cv_temporal_densidad = safe_log10(lst_cv_temporal_densidad),
+    across(c(lst_cv_temporal, log_lst_cv_temporal,
+             lst_cv_temporal_densidad, log_lst_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5 · PRECIP CV temporal  &  6 · PRECIP media espacial (idéntica lógica)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Precip cv temporal
+precip_cv_temp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_PRECIP_cv_temporal_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_precip_cv_temp <- st_as_sf(
+  data.frame(precip_cv_temp, geometry = geojson_sf(precip_cv_temp$.geo)), crs = 4326
+) |>
+  dplyr::rename(precip_cv_temporal = mean) |>
+  dplyr::mutate(
+    log_precip_cv_temporal          = safe_log10(precip_cv_temporal),
+    precip_cv_temporal_densidad     = precip_cv_temporal / AREA_HA,
+    log_precip_cv_temporal_densidad = safe_log10(precip_cv_temporal_densidad),
+    across(c(precip_cv_temporal, log_precip_cv_temporal,
+             precip_cv_temporal_densidad, log_precip_cv_temporal_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)   
+
+
+# Precip media espacial
+precip_media_esp <- readr::read_csv(
+  here::here("Data/OUT_covars_csv/OUT_PRECIP_media_espacial_combinado.csv"),
+  show_col_types = FALSE
+)
+
+covars_precip_media <- st_as_sf(
+  data.frame(precip_media_esp, geometry = geojson_sf(precip_media_esp$.geo)), crs = 4326
+) |>
+  dplyr::rename(precip_media = mean) |>
+  dplyr::mutate(
+    log_precip_media          = safe_log10(precip_media),
+    precip_media_densidad     = precip_media / AREA_HA,
+    log_precip_media_densidad = safe_log10(precip_media_densidad),
+    across(c(precip_media, log_precip_media,
+             precip_media_densidad, log_precip_media_densidad),
+           ~ scale(.x)[,1], .names = "{.col}_z")
+  ) |>
+  dplyr::select(-.geo, -stdDev, -system.index)
+
+
+```
+
+Descargamos el mapa geológico 1 : 500 000 del SGC vía servicio REST y lo reclasificamos en eras (Cz, Mz, Pz, Ptz). Esa simplificación facilita interpretar la historia geológica dominante de cada UCS y nos servirá más adelante como posible factor jerárquico o como covariable categórica en modelos mixtos.
+
+```{r carga_geologico}
+
+url_base   <- "https://srvags.sgc.gov.co/arcgis/rest/services/Mapa_Geologico_Colombia/Mapa_Geologico_Colombia_V2023/MapServer/733/query"
+url_geo    <- httr::modify_url(
+  url_base,
+  query = list(where = "1=1", outFields = "*",
+               returnGeometry = "true", f = "geojson")
+)
+
+geo_sf_wgs84 <- sf::st_read(url_geo, quiet = TRUE) |>
+  sf::st_make_valid() |>
+  mutate(
+    # LIMPIEZA -----------------------------------------------------------------
+    edad_limpia = Edad |>
+      str_replace_all("\\?", "") |>
+      str_trim() |>
+      str_to_lower() |>
+      stringi::stri_trans_general("Latin-ASCII") |>
+      str_replace_all("-", " ") |>
+      str_squish(),
+    
+    # RECLASIFICACIÓN POR ERA --------------------------------------------------
+    era_geo = case_when(
+      # 1) CENOZOICO -----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "paleoceno|eoceno|oligoceno|mioceno|plioceno|pleistoceno|holoceno|
+         aquitaniano|burdigaliano|langhiano|serravaliano|tortoniano|messiniano|
+         zancliano|rupeliano|thanetiano|lutetiano|bartoniano|priaboniano|
+         selandiano|daniense|chattiano|cuaternario|mesiniano",
+        ignore_case = TRUE)) ~ "Cz",
+      
+      # 2) MESOZOICO -----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "triasico|jurasico|cretacico|berriasiano|valanginiano|barremiano|
+         aptiano|albiano|cenomaniano|turoniano|coniaciano|santoniano|
+         campaniano|maastrichtiano",
+        ignore_case = TRUE)) ~ "Mz",
+      
+      # 3) PALEOZOICO ----------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "\\bcambrico\\b|\\bordovicico\\b|\\bsilurico\\b|\\bdevonico\\b|
+         \\bmississipiano\\b|\\bpridoliano\\b|\\bcarbonifero\\b|
+         \\bpennsylvaniano\\b|\\bpermico\\b|\\bpaleozoico\\b",
+        ignore_case = TRUE)) ~ "Pz",
+      
+      # 4) PROTEROZOICO --------------------------------------------------------
+      str_detect(edad_limpia, regex(
+        "sideriano|rhyaciano|orosiriano|statheriano|calymmiano|ectasiano|
+         steniano|toniano|criogenico|ediacariano|mesoproterozoico|
+         neoproterozoico|proterozoico",
+        ignore_case = TRUE)) ~ "Ptz",
+      
+      # 5) SIN DATO ------------------------------------------------------------
+      TRUE ~ "NA"
+    )
+  ) |>
+  st_transform(4326) |>
+  select(descripcion_geo = Descripcion, era_geo, edad_limpia)
+```
+
+## 2. Procesamiento
+
+Aquí ensamblamos la tabla maestra del estudio: partimos de las UCS, añadimos la variable respuesta (log_Qdens), cruzamos con la era geológica y, por último, unimos todas las covariables ambientales. El objeto resultante (modelo_sf) concentra en un único data-frame espacial toda la información necesaria para explorar autocorrelación y ajustar los modelos SAR/CAR.
+
+```{r procesamiento_datos}
+
+## Era geológica dominante por intersección ---------------------------
+ucs_geo_df <- sf::st_join(
+  ucs_sf_4326 |> dplyr::select(id_creado),     
+  geo_sf_wgs84,
+  join = sf::st_intersects,
+  left = TRUE
+) |>
+  sf::st_drop_geometry() |>
+  dplyr::distinct(id_creado, .keep_all = TRUE)
+
+## Ensamblar modelo_sf (respuesta + covariables + geología) -----------------
+modelo_sf <- ucs_sf_4326 |>
+  # respuesta
+  dplyr::mutate(
+    Q      = dplyr::if_else(Q == 0, 1e-3, Q),   # evita log(0)
+    Qdens  = Q / AREA_HA,
+    log_Qdens = log10(Qdens)
+  ) |>
+  # geología
+  dplyr::left_join(ucs_geo_df, by = "id_creado") |>
+  # covariables
+  left_join(covars_dem            |> sf::st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_pendiente      |> sf::st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_cv_temp    |> sf::st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_lst_media      |> sf::st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_cv_temp |> sf::st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo")) |>
+  left_join(covars_precip_media   |> sf::st_drop_geometry(),
+            by = c("id_creado","AREA_HA","UCSuelo"))
+
+## Vista rápida -----------------------------------------------------------
+glimpse(modelo_sf, width = 80)
+modelo_df <- sf::st_drop_geometry(modelo_sf)
+
+
+```
+
+## 3. Diagnóstico de autocorrelación espacial (Moran I y LISA)
+
+Antes de plantear un SAR o un CAR necesitamos evidencias de que la pedodiversidad presenta dependencia espacial que los predictores no expliquen por sí solos. El estadístico de Moran I cumple ese papel: (i) evaluamos la autocorrelación global de log_Qdens; (ii) localizamos los focos High-High / Low-Low con LISA; y (iii) más adelante repetiremos Moran I sobre los residuos del OLS. Si la variable ya muestra autocorrelación pero ésta desaparece tras el OLS, el componente espacial resulta prescindible. Si la autocorrelación persiste en los residuos, indicará la necesidad de un modelo SAR error o CAR; si además existe “efecto derrame” en la respuesta, un SAR lag/Durbin será más apropiado. Por tanto, este diagnóstico guía la selección y la complejidad del modelo espacial que aplicaremos a continuación.
+
+En esta sección:
+
+-   Construimos la estructura espacial de contigüidad queen y su matriz de pesos W, estandarizada por filas (style = "W").
+-   Medimos la autocorrelación global de la variable respuesta (log_Qdens) con el estadístico de Moran I.
+-   Exploramos la autocorrelación local mediante LISA (Local Indicators of Spatial Association), clasificando los polígonos en clústeres High-High, Low-Low, High-Low, Low-High y “No sig.” (p \> 0.05).
+
+En este paso generamos la red de contigüidad que utilizarán **todas** las pruebas y modelos espaciales posteriores.\
+Partimos de las UCS en su proyección original ( WGS 84 ):
+
+**Simplificación suave** – se eliminan vértices redundantes con una tolerancia angular de 0.0005° (≈ 55 m en el ecuador); así aligeramos la geometría sin alterar la forma ni el área útil para el análisis.
+
+**Geometría plana en `spdep`** – desactivamos `s2` para que la librería trabaje en 2-D y no en la superficie esférica.
+
+**Contigüidad Queen** – `poly2nb()` busca polígonos que compartan al menos un punto; un `snap` de 1 × 10⁻⁶ ° (≈ 10 cm) fusiona vértices casi coincidentes y evita “grietas” numéricas.
+
+**Matriz de pesos fila-estandarizada** – convertimos la lista de vecinos a `listw` con estilo “W”.
+
+**Control de calidad** – verificamos que ningún polígono quede sin vecinos; si alguno aparece, el script se detiene y avisa.
+
+La matriz resultante (`lw_queen`) alimentará los cálculos de **Moran I global**, **LISA local** y los términos espaciales de los modelos SAR / CAR que construiremos más adelante.
+
+```{r matriz_vecindad}
+
+## ----matriz_vecindad (versión WGS-84 que no aísla polígonos) ---------------
+
+# 0 · Partimos del objeto en WGS-84 (EPSG 4326) ------------------------------
+modelo_sf_s <- ucs_sf_4326 |>
+  dplyr::select(id_creado, geometry) |>
+
+  # 1 · Simplificación de vértices (tolerancia angular ≈ 55 m)
+  sf::st_simplify(
+    dTolerance       = 0.0005,        # 0.0005° ≈ 55 m
+    preserveTopology = TRUE
+  ) |>
+  sf::st_make_valid()
+
+# 2 · Desactivamos s2 para que spdep opere en 2-D plano ----------------------
+sf::sf_use_s2(FALSE)
+
+# 3 · Vecindad Queen (poly2nb) ----------------------------------------------
+#     snap = 1e-6° (≈ 0.11 m) evita falsas “grietas” numéricas
+nb_queen <- spdep::poly2nb(
+  modelo_sf_s,
+  queen = TRUE,
+  snap  = 1e-6,
+  useC  = TRUE
+)
+
+lw_queen <- spdep::nb2listw(
+  nb_queen,
+  style       = "W",
+  zero.policy = TRUE
+)
+
+# 4 · Verificación: ningún polígono sin vecinos ------------------------------
+stopifnot(sum(spdep::card(nb_queen) == 0) == 0)
+
+```
+
+Con un gráfico rápido inspeccionamos la malla de vecinos resultante. Ver las aristas superpuestas a los polígonos nos da confianza en que la topología está bien capturada antes de pasar a las pruebas formales de autocorrelación.
+
+```{r visualizacion_pesos}
+
+ggplot() +
+  geom_sf(data = modelo_sf_s, fill = NA, colour = "grey80", linewidth = .1) +
+  geom_segment(data = spdep::nb2lines(nb_queen, modelo_sf_s),
+               aes(x = x1, y = y1, xend = x2, yend = y2),
+               colour = "#56B4E9", linewidth = .2, alpha = .4) +
+  labs(title = "Estructura de vecindad (Queen, EPSG 9377)") +
+  theme_void()
+
+```
+
+Evaluamos la autocorrelación espacial global de la variable dependiente (log_Qdens) mediante el estadístico de Moran I. Al filtrar los polígonos sin vecinos evitamos sesgos y establecemos si existe dependencia espacial que justifique modelos SAR o CAR: si p \< 0.05 se confirma autocorrelación positiva y será necesario considerar un modelo espacial (SAR error/lag o CAR). Si p ≥ 0.05 no hay evidencia de dependencia global y un modelo no-espacial podría bastar.
+
+```{r moranI_Qdens}
+
+# 1. Vector respuesta y vecinos válidos ------------------------------------
+y_raw     <- modelo_sf$log_Qdens
+valid_idx <- which(!is.na(y_raw) & spdep::card(nb_queen) > 0)
+
+## 2. Vector lógico del mismo largo que nb_queen ----------------------------
+keep <- seq_along(nb_queen) %in% valid_idx     # TRUE si la posición es válida
+
+## 3. Sub-lista de pesos coherente ------------------------------------------
+lw_sub <- spdep::subset.listw(lw_queen, keep, zero.policy = TRUE)
+
+## 4. Moran I global sin NA --------------------------------------------------
+moran_raw <- spdep::moran.test(
+  y_raw[keep],
+  listw       = lw_sub,
+  zero.policy = TRUE
+)
+moran_raw
+```
+
+Calculamos el Moran local (LISA) para identificar clusters de valores altos y bajos de log_Qdens. Esta información no solo ofrece un diagnóstico espacial fino, sino que también permitirá contrastar la capacidad de los modelos para capturar esos patrones.
+
+```{r LISA}
+
+# LISA
+lisa_raw <- spdep::localmoran(y_raw[valid_idx], lw_sub)
+
+# Añade columnas al mismo objeto
+modelo_sf_s <- modelo_sf_s |>
+  dplyr::mutate(
+    Ii_raw   = NA_real_,
+    lag_raw  = NA_real_,
+    p_Ii_raw = NA_real_,
+    cluster_raw = NA_character_
+  )
+modelo_sf_s$Ii_raw  [valid_idx] <- lisa_raw[, 1]
+modelo_sf_s$p_Ii_raw[valid_idx] <- lisa_raw[, 5]
+modelo_sf_s$lag_raw[valid_idx]  <- spdep::lag.listw(lw_sub, y_raw[valid_idx])
+
+modelo_sf_s <- modelo_sf_s |>
+  dplyr::mutate(
+    cluster_raw = dplyr::case_when(
+      log_Qdens > mean(log_Qdens, na.rm = TRUE) &
+        lag_raw  > mean(lag_raw,  na.rm = TRUE) ~ "High-High",
+      log_Qdens < mean(log_Qdens, na.rm = TRUE) &
+        lag_raw  < mean(lag_raw,  na.rm = TRUE) ~ "Low-Low",
+      log_Qdens > mean(log_Qdens, na.rm = TRUE) &
+        lag_raw  < mean(lag_raw,  na.rm = TRUE) ~ "High-Low",
+      log_Qdens < mean(log_Qdens, na.rm = TRUE) &
+        lag_raw  > mean(lag_raw,  na.rm = TRUE) ~ "Low-High",
+      TRUE ~ "No sig."
+    ),
+    cluster_raw = ifelse(p_Ii_raw > 0.05, "No sig.", cluster_raw)
+  )
+
+
+```
+
+Cerramos la exploración descriptiva con tres paneles: (i) diagrama de dispersión Moran local, (ii) mapa de clusters LISA y (iii) mapa de los valores Ii. Esta visualización resume de forma intuitiva dónde se concentran los núcleos y valles de diversidad antes de modelar explícitamente la dependencia espacial.
+
+```{r visualizacion_LISA}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0 · Paletas coherentes con el cuaderno
+# ─────────────────────────────────────────────────────────────────────────────
+pal_continuo <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+pal_qualitat <- paletteer::paletteer_d("wesanderson::Zissou1Continuous", 5)
+
+col_lisa <- c(
+  "High-High" = pal_continuo[90],   # rojo
+  "Low-Low"   = pal_continuo[10],   # azul
+  "High-Low"  = pal_continuo[70],   # naranja
+  "Low-High"  = pal_continuo[30],   # celeste
+  "No sig."   = "grey90"
+)
+
+## ── 1. Calcula las medias (NO se modifica el objeto) ──────────────────────
+x0 <- mean(modelo_sf_s$log_Qdens, na.rm = TRUE)
+y0 <- mean(modelo_sf_s$lag_raw ,  na.rm = TRUE)
+
+## ── 2. Scatterplot Moran local coherente con la clasificación ─────────────
+p_scatter_lisa <- ggplot(modelo_sf_s,
+                         aes(x = log_Qdens,
+                             y = lag_raw,
+                             colour = cluster_raw)) +
+  geom_point(alpha = 0.8, size = 1) +
+  geom_smooth(method = "lm", se = FALSE,
+              colour = "black", linewidth = 0.5) +
+  geom_hline(yintercept = y0, linetype = "dashed", colour = "grey60") +
+  geom_vline(xintercept = x0, linetype = "dashed", colour = "grey60") +
+  scale_colour_manual(values = col_lisa, name = "Clúster LISA") +
+  labs(x = "log₁₀(Q / Área)",
+       y = "Lag espacial",
+       title = "Diagrama de dispersión Moran local") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "right")
+
+## ── 3. Mapa de clústeres y mapa de Ii (igual que antes) ───────────────────
+p_moran_lisa <- ggplot(modelo_sf_s) +
+  geom_sf(aes(fill = cluster_raw), colour = NA) +
+  scale_fill_manual(values = col_lisa, na.value = "white",
+                    name = "Clúster LISA") +
+  labs(title = "Mapa: clústeres LISA de log_Qdens") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "right")
+
+p_ii_mapa <- ggplot(modelo_sf_s) +
+  geom_sf(aes(fill = Ii_raw), colour = NA) +
+  scale_fill_viridis_c(name = "Ii", option = "magma",
+                       direction = -1, na.value = "white") +
+  labs(title = "Mapa: valor local del estadístico Ii") +
+  theme_minimal(base_size = 11)
+
+## ── 4. Tripanel sin leyenda duplicada ─────────────────────────────────────
+p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa +
+  patchwork::plot_layout(ncol = 3, guides = "auto")
+
+ggplot2::ggsave(
+  filename = here::here("Figures", "moran_local_tripanel.png"),
+  plot     = p_lisa_tripanel,
+  width    = 15, height = 5, dpi = 300
+)
+
+```
