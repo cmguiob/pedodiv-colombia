@@ -37,6 +37,7 @@ pacman::p_load(
   sjPlot,       # visualización de modelos (coeficientes, efectos marginales)
   spdep,        # estructuras de vecinos y pruebas de autocorrelación
   spatialreg,   # modelos SAR / SEM / SDM / SDEM / SARAR
+  spaMM,        # Modelos mixtos
   performance,  # métricas de ajuste (pseudo-R², VIF, etc.)
   classInt,     # cortes de intervalos (quantile, jenks, etc.)
   INLA,         # modelos Bayesianos rápidos (CAR/BYM/Leroux)
@@ -46,6 +47,9 @@ pacman::p_load(
 )
 
 theme_set(theme_minimal(base_size = 13))
+
+# Para instalar INLA:
+# https://www.r-inla.org/download-install
 
 ```
 
@@ -343,64 +347,56 @@ modelo_df <- sf::st_drop_geometry(modelo_sf)
 
 ## 3. Diagnóstico de autocorrelación espacial (Moran I y LISA)
 
-Antes de plantear un SAR o un CAR necesitamos evidencias de que la pedodiversidad presenta dependencia espacial que los predictores no expliquen por sí solos. El estadístico de Moran I cumple ese papel: (i) evaluamos la autocorrelación global de log_Qdens; (ii) localizamos los focos High-High / Low-Low con LISA; y (iii) más adelante repetiremos Moran I sobre los residuos del OLS. Si la variable ya muestra autocorrelación pero ésta desaparece tras el OLS, el componente espacial resulta prescindible. Si la autocorrelación persiste en los residuos, indicará la necesidad de un modelo SAR error o CAR; si además existe “efecto derrame” en la respuesta, un SAR lag/Durbin será más apropiado. Por tanto, este diagnóstico guía la selección y la complejidad del modelo espacial que aplicaremos a continuación.
+En esta sección construiremos la malla de vecinos Queen, obtendremos la matriz de
+pesos W, calcularemos la autocorrelación **global** (Moran I) y la
+autocorrelación **local** (LISA).  El objetivo es confirmar la presencia de
+dependencia espacial y localizar *hot-spots* y *cold-spots* de pedodiversidad
+antes de pasar a los modelos SAR / CAR.
+  etc.
 
-En esta sección:
+### 3.1 Construcción de la red Queen y de la matriz W
 
--   Construimos la estructura espacial de contigüidad queen y su matriz de pesos W, estandarizada por filas (style = "W").
--   Medimos la autocorrelación global de la variable respuesta (log_Qdens) con el estadístico de Moran I.
--   Exploramos la autocorrelación local mediante LISA (Local Indicators of Spatial Association), clasificando los polígonos en clústeres High-High, Low-Low, High-Low, Low-High y “No sig.” (p \> 0.05).
+El siguiente bloque:
 
-En este paso generamos la red de contigüidad que utilizarán **todas** las pruebas y modelos espaciales posteriores.\
-Partimos de las UCS en su proyección original ( WGS 84 ):
+1. prepara un `sf` liviano que conserva solo `id_creado`, `log_Qdens`
+y la geometría;  
+2. simplifica los vértices para acelerar la vecindad;  
+3. desactiva la geometría esférica (`sf_use_s2(FALSE)`) para que
+`poly2nb()` trabaje en 2-D;  
+4. crea la lista de vecinos Queen y la convierte en matriz de pesos
+fila-estandarizada.
 
-**Simplificación suave** – se eliminan vértices redundantes con una tolerancia angular de 0.0005° (≈ 55 m en el ecuador); así aligeramos la geometría sin alterar la forma ni el área útil para el análisis.
-
-**Geometría plana en `spdep`** – desactivamos `s2` para que la librería trabaje en 2-D y no en la superficie esférica.
-
-**Contigüidad Queen** – `poly2nb()` busca polígonos que compartan al menos un punto; un `snap` de 1 × 10⁻⁶ ° (≈ 10 cm) fusiona vértices casi coincidentes y evita “grietas” numéricas.
-
-**Matriz de pesos fila-estandarizada** – convertimos la lista de vecinos a `listw` con estilo “W”.
-
-**Control de calidad** – verificamos que ningún polígono quede sin vecinos; si alguno aparece, el script se detiene y avisa.
-
-La matriz resultante (`lw_queen`) alimentará los cálculos de **Moran I global**, **LISA local** y los términos espaciales de los modelos SAR / CAR que construiremos más adelante.
 
 ```{r matriz_vecindad}
 
-## ----matriz_vecindad (versión WGS-84 que no aísla polígonos) ---------------
-
-# 0 · Partimos del objeto en WGS-84 (EPSG 4326) ------------------------------
-modelo_sf_s <- ucs_sf_4326 |>
-  dplyr::select(id_creado, geometry) |>
-
-  # 1 · Simplificación de vértices (tolerancia angular ≈ 55 m)
-  sf::st_simplify(
-    dTolerance       = 0.0005,        # 0.0005° ≈ 55 m
-    preserveTopology = TRUE
-  ) |>
+## 0 · Preparamos un objeto liviano con respuesta + geometría --------------
+modelo_sf_s <- modelo_sf |>
+  dplyr::select(id_creado, log_Qdens, geometry) |>
+  sf::st_simplify(dTolerance = 0.0005, preserveTopology = TRUE) |>
   sf::st_make_valid()
 
-# 2 · Desactivamos s2 para que spdep opere en 2-D plano ----------------------
-sf::sf_use_s2(FALSE)
+## 1 · Forzamos geometría plana en {spdep} ----------------------------------
+sf::sf_use_s2(FALSE)   # debe ejecutarse antes de poly2nb()
 
-# 3 · Vecindad Queen (poly2nb) ----------------------------------------------
-#     snap = 1e-6° (≈ 0.11 m) evita falsas “grietas” numéricas
+## 2 · Lista de vecinos Queen (snap evita “grietas” numéricas) --------------
 nb_queen <- spdep::poly2nb(
   modelo_sf_s,
   queen = TRUE,
-  snap  = 1e-6,
+  snap  = 1e-06,   # ≈ 0.11 m
   useC  = TRUE
 )
 
+## 3 · Matriz de pesos W (fila-estandarizada) -------------------------------
 lw_queen <- spdep::nb2listw(
   nb_queen,
   style       = "W",
   zero.policy = TRUE
 )
 
-# 4 · Verificación: ningún polígono sin vecinos ------------------------------
-stopifnot(sum(spdep::card(nb_queen) == 0) == 0)
+## 4 · Guardamos los polígonos sin vecinos por si se quieren revisar más tarde
+sin_vecinos <- which(spdep::card(nb_queen) == 0)
+length(sin_vecinos)        # ≈ 0 si todo va bien
+
 
 ```
 
@@ -408,72 +404,146 @@ Con un gráfico rápido inspeccionamos la malla de vecinos resultante. Ver las a
 
 ```{r visualizacion_pesos}
 
+# matriz de coordenadas de centroides para nb2lines()
+coords <- sf::st_coordinates(sf::st_centroid(modelo_sf_s))
+
 ggplot() +
-  geom_sf(data = modelo_sf_s, fill = NA, colour = "grey80", linewidth = .1) +
-  geom_segment(data = spdep::nb2lines(nb_queen, modelo_sf_s),
-               aes(x = x1, y = y1, xend = x2, yend = y2),
-               colour = "#56B4E9", linewidth = .2, alpha = .4) +
-  labs(title = "Estructura de vecindad (Queen, EPSG 9377)") +
+  geom_sf(data = modelo_sf_s, colour = "grey80", fill = NA, linewidth = .1) +
+  geom_segment(
+    data = spdep::nb2lines(nb_queen, coords = coords),
+    aes(x = x1, y = y1, xend = x2, yend = y2),
+    colour = "#56B4E9", linewidth = .2, alpha = .4
+  ) +
+  labs(title = "Malla de vecinos (contigüidad Queen)") +
   theme_void()
+
 
 ```
 
-Evaluamos la autocorrelación espacial global de la variable dependiente (log_Qdens) mediante el estadístico de Moran I. Al filtrar los polígonos sin vecinos evitamos sesgos y establecemos si existe dependencia espacial que justifique modelos SAR o CAR: si p \< 0.05 se confirma autocorrelación positiva y será necesario considerar un modelo espacial (SAR error/lag o CAR). Si p ≥ 0.05 no hay evidencia de dependencia global y un modelo no-espacial podría bastar.
+### 3.2 Analisis de autocorrelación Moran I y LISA
+
+En los siguientes chunks se calcula (i) el Moran I global de log_Qdens bajo aleatorización y (ii) los indicadores locales (LISA). Solo se incluyen las UCS que poseen un valor distinto de NA y cumplen uno de estos criterios de vecindad:
+
+Opción A – recomendada (activada por defecto)
+Al menos un vecino tiene log_Qdens ≠ NA.
+Esto evita que el lag se rellene con 0 cuando todos los vecinos carecen de dato, y elimina la franja horizontal artificial del diagrama de dispersión.
+
+Opción B – legacy
+Basta con que el polígono tenga ≥ 1 vecino, sin verificar si esos vecinos presentan datos.
+Úsala solo si necesitas reproducir resultados antiguos; reintroduce la franja horizontal.
+
+Para cambiar de una opción a la otra basta con comentar / des-comentar la línea indicada.
+subset.listw() requiere un vector lógico (TRUE / FALSE), de ahí la conversión de índices a keep_log.
+
+Al activar la opción A se descartan aquellos polígonos cuyos vecinos no tienen dato válido en log_Qdens. En la definición clásica de Moran I, el término 
+𝑊
+𝑦
+Wy (lag espacial) es el promedio ponderado de los valores de los vecinos; si todos esos vecinos son NA, la función de spdep—al operar con zero.policy = TRUE—reemplaza el lag por 0.
+Esos ceros artificiales inflan la semejanza entre la UCS y su vecindario (porque comparan un dato real con 0, valor que suele quedar lejos de la media global), de modo que:
+
+Con la opción B esos polígonos se mantienen, su lag “0” introduce correlaciones espurias y el Moran I global se sobre-estima.
+
+Con la opción A se eliminan de la prueba (no cumplen al menos un vecino con dato), de forma que el estadístico se calcula sólo con vecindarios reales. Al desaparecer la autocorrelación ficticia, la magnitud de Moran I disminuye, aunque suele seguir siendo estadísticamente significativa.
+
+En síntesis, la opción A proporciona una medida más conservadora y fidedigna de la dependencia espacial; la opción B se conserva solo para reproducir resultados antiguos, a costa de introducir un sesgo positivo.
 
 ```{r moranI_Qdens}
 
-# 1. Vector respuesta y vecinos válidos ------------------------------------
-y_raw     <- modelo_sf$log_Qdens
-valid_idx <- which(!is.na(y_raw) & spdep::card(nb_queen) > 0)
+## ─────────────────────────────────────────────────────────────────────────────
+##  MORAN I global  (variable log_Qdens)
+## ─────────────────────────────────────────────────────────────────────────────
 
-## 2. Vector lógico del mismo largo que nb_queen ----------------------------
-keep <- seq_along(nb_queen) %in% valid_idx     # TRUE si la posición es válida
+# Vector respuesta (orden idéntico a nb_queen / lw_queen) ---------------------
+y_raw <- modelo_sf$log_Qdens
 
-## 3. Sub-lista de pesos coherente ------------------------------------------
-lw_sub <- spdep::subset.listw(lw_queen, keep, zero.policy = TRUE)
+# ── OPCIÓN A  ─ válida si ≥ 1 vecino con dato no-NA  -------------------------
+vecinos_con_dato <- sapply(nb_queen, \(nb) any(!is.na(y_raw[nb])))
+keep_idx <- which(!is.na(y_raw) & vecinos_con_dato)          # ← activa ésta
 
-## 4. Moran I global sin NA --------------------------------------------------
+# ── OPCIÓN B  ─ versión heredada (franja horizontal)  ------------------------
+# keep_idx <- which(!is.na(y_raw) & spdep::card(nb_queen) > 0)
+
+# Convierto a vector lógico (requisito de subset.listw) -----------------------
+keep_log <- seq_along(nb_queen) %in% keep_idx                # TRUE / FALSE
+
+# Sub-lista de pesos coherente ------------------------------------------------
+lw_sub <- spdep::subset.listw(lw_queen, subset = keep_log, zero.policy = TRUE)
+
+# Moran I global --------------------------------------------------------------
 moran_raw <- spdep::moran.test(
-  y_raw[keep],
+  y_raw[keep_log],          # valores solo para las UCS “válidas”
   listw       = lw_sub,
   zero.policy = TRUE
 )
-moran_raw
+print(moran_raw)
+
+# Guardamos estadístico y p-valor para anotación posterior --------------------
+I_global <- round(moran_raw$estimate[["Moran I statistic"]], 4)
+p_global <- signif(moran_raw$p.value, 3)
+
+
 ```
 
-Calculamos el Moran local (LISA) para identificar clusters de valores altos y bajos de log_Qdens. Esta información no solo ofrece un diagnóstico espacial fino, sino que también permitirá contrastar la capacidad de los modelos para capturar esos patrones.
+Con la misma sub-matriz de pesos (lw_sub) se calculan los indicadores locales (Ii, p-valor, lag espacial) y se categoriza cada UCS como High-High, Low-Low, High-Low, Low-High o No sig. (p > 0.05).
+
+Moran I es un promedio ponderado de todas las covarianzas espaciales; tiende a “diluir” focos muy fuertes cuando hay áreas extensas sin patrón. El Ii (LISA) estandariza cada polígono por la varianza local –por eso puede alcanzar valores de 8-12 incluso cuando I ≈ 0.08. Con un número de UCS grande, un I pequeño puede ser altamente significativo (p ≪ 0.01) y justificar la búsqueda de clústeres locales.
 
 ```{r LISA}
 
-# LISA
-lisa_raw <- spdep::localmoran(y_raw[valid_idx], lw_sub)
+# ──────────────────────────────────────────────────────────────
+# LISA LOCAL ― detecta focos de autocorrelación
+# Input  :  y_raw      – vector completo de log_Qdens
+#           keep_log   – vector lógico (TRUE = UCS con dato y ≥1 vecino válido)
+#           lw_sub     – sub-matriz de pesos (fila-estandarizada) para keep_log
+# Output :  modelo_sf_s recibe Ii_raw · p_Ii_raw · lag_raw · cluster_raw
+# ──────────────────────────────────────────────────────────────
 
-# Añade columnas al mismo objeto
-modelo_sf_s <- modelo_sf_s |>
-  dplyr::mutate(
-    Ii_raw   = NA_real_,
-    lag_raw  = NA_real_,
-    p_Ii_raw = NA_real_,
-    cluster_raw = NA_character_
+## 1 ▸ Estadísticos locales de Moran (Ii, p-value, etc.)
+##    - Usamos sólo los polígonos “válidos” → y_raw[keep_log]
+lisa_raw <- spdep::localmoran(y_raw[keep_log], lw_sub)
+# lisa_raw tiene 5 columnas, pero el nombre exacto del p-value
+# varía entre versiones de *spdep* (“Pr(z > 0)”, “Pr(z > 0.0)”, …)
+
+## 2 ▸ Copiamos resultados a la tabla espacial -----------------
+##    - Creamos columnas “vacías” (NA) para luego rellenar
+modelo_sf_s <- modelo_sf_s %>%
+  mutate(
+    Ii_raw   = NA_real_,   # valor del indicador local
+    p_Ii_raw = NA_real_,   # p-value (se rellena abajo)
+    lag_raw  = NA_real_    # promedio ponderado de vecinos
   )
-modelo_sf_s$Ii_raw  [valid_idx] <- lisa_raw[, 1]
-modelo_sf_s$p_Ii_raw[valid_idx] <- lisa_raw[, 5]
-modelo_sf_s$lag_raw[valid_idx]  <- spdep::lag.listw(lw_sub, y_raw[valid_idx])
 
-modelo_sf_s <- modelo_sf_s |>
-  dplyr::mutate(
-    cluster_raw = dplyr::case_when(
-      log_Qdens > mean(log_Qdens, na.rm = TRUE) &
-        lag_raw  > mean(lag_raw,  na.rm = TRUE) ~ "High-High",
-      log_Qdens < mean(log_Qdens, na.rm = TRUE) &
-        lag_raw  < mean(lag_raw,  na.rm = TRUE) ~ "Low-Low",
-      log_Qdens > mean(log_Qdens, na.rm = TRUE) &
-        lag_raw  < mean(lag_raw,  na.rm = TRUE) ~ "High-Low",
-      log_Qdens < mean(log_Qdens, na.rm = TRUE) &
-        lag_raw  > mean(lag_raw,  na.rm = TRUE) ~ "Low-High",
-      TRUE ~ "No sig."
-    ),
-    cluster_raw = ifelse(p_Ii_raw > 0.05, "No sig.", cluster_raw)
+##    - Índices lógicos → posiciones numéricas para asignar
+modelo_sf_s$Ii_raw [keep_log] <- lisa_raw[, "Ii"]
+
+# --- p-value: busca la columna que empieza por “Pr(” -------------------------
+
+# spdep ≤1.2 usa nombre "Pr(z > 0)"; versiones ≥1.3 cambian a "Pr(z > 0.0)"
+p_col <- grep("^Pr\\(", colnames(lisa_raw))        # devuelve índice(s)
+if (length(p_col) != 1) p_col <- 5                 # respaldo: 5.ª columna
+
+modelo_sf_s$p_Ii_raw[keep_log] <- lisa_raw[, p_col]
+
+# --- Lag espacial (Wy) -------------------------------------------------------
+modelo_sf_s$lag_raw[keep_log]  <- spdep::lag.listw(
+  lw_sub, y_raw[keep_log]
+)
+
+## 3 ▸ Clasificación en clústeres LISA --------------------------
+##    - Umbrales global/lag calculados sobre las mismas filas válidas
+global_mean <- mean(y_raw[keep_log],               na.rm = TRUE)
+lag_mean    <- mean(modelo_sf_s$lag_raw[keep_log], na.rm = TRUE)
+
+modelo_sf_s <- modelo_sf_s %>%
+  mutate(
+    # Etiqueta según cuadrante y significancia (p ≤ 0.05)
+    cluster_raw = case_when(
+      log_Qdens > global_mean & lag_raw > lag_mean & p_Ii_raw <= 0.05 ~ "High-High",
+      log_Qdens < global_mean & lag_raw < lag_mean & p_Ii_raw <= 0.05 ~ "Low-Low",
+      log_Qdens > global_mean & lag_raw < lag_mean & p_Ii_raw <= 0.05 ~ "High-Low",
+      log_Qdens < global_mean & lag_raw > lag_mean & p_Ii_raw <= 0.05 ~ "Low-High",
+      TRUE ~ "No sig."   # no significativo o sin vecinos con dato
+    )
   )
 
 
@@ -481,67 +551,406 @@ modelo_sf_s <- modelo_sf_s |>
 
 Cerramos la exploración descriptiva con tres paneles: (i) diagrama de dispersión Moran local, (ii) mapa de clusters LISA y (iii) mapa de los valores Ii. Esta visualización resume de forma intuitiva dónde se concentran los núcleos y valles de diversidad antes de modelar explícitamente la dependencia espacial.
 
+Los ejes del scatter se centran en las medias globales (x̄, ẏ)Para gráficas el clásico origen (0, 0) bastaría estandarizar log_Qdens (z-score) y volver a calcular el lag: entonces x̄ = ẏ = 0.
+
 ```{r visualizacion_LISA}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 0 · Paletas coherentes con el cuaderno
-# ─────────────────────────────────────────────────────────────────────────────
-pal_continuo <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
-pal_qualitat <- paletteer::paletteer_d("wesanderson::Zissou1Continuous", 5)
 
-col_lisa <- c(
-  "High-High" = pal_continuo[90],   # rojo
-  "Low-Low"   = pal_continuo[10],   # azul
-  "High-Low"  = pal_continuo[70],   # naranja
-  "Low-High"  = pal_continuo[30],   # celeste
-  "No sig."   = "grey90"
+# ────────────────────────────────────────────────────────────────────────────
+#  VISUALIZACIÓN · TRIPANEL LISA
+#  (a) Scatter local (Moran)    · anota I global
+#  (b) Mapa de clústeres LISA   · cinco clases + “No sig.”
+#  (c) Mapa de valores Ii       · magnitud del estadístico local
+#  *solo UCS con keep_log = TRUE*
+# ────────────────────────────────────────────────────────────────────────────
+
+## 1 ▸ Data-frames ------------------------------------------------------------
+plot_df    <- modelo_sf_s[keep_log, ]                     # mapas
+scatter_df <- plot_df |> filter(!is.na(cluster_raw))      # scatter
+
+## 2 ▸ Paletas y niveles ------------------------------------------------------
+pal_cont <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+col_lisa <- c("High-High" = pal_cont[90],
+              "Low-Low"   = pal_cont[10],
+              "High-Low"  = pal_cont[70],
+              "Low-High"  = pal_cont[30],
+              "No sig."   = "grey90")
+
+niveles <- c("No sig.", "Low-Low", "Low-High", "High-Low", "High-High")
+scatter_df <- scatter_df |> mutate(
+  cluster_raw = factor(cluster_raw, levels = niveles),
+  cluster_sig = ifelse(cluster_raw == "No sig.", "No", "Sí")   # helper α
 )
 
-## ── 1. Calcula las medias (NO se modifica el objeto) ──────────────────────
-x0 <- mean(modelo_sf_s$log_Qdens, na.rm = TRUE)
-y0 <- mean(modelo_sf_s$lag_raw ,  na.rm = TRUE)
+## 3 ▸ Referencias para el scatter -------------------------------------------
+x0 <- mean(scatter_df$log_Qdens, na.rm = TRUE)
+y0 <- mean(scatter_df$lag_raw ,  na.rm = TRUE)
+txt_I <- sprintf("Global Moran I = %.4f (p = %.3g)", I_global, p_global)
 
-## ── 2. Scatterplot Moran local coherente con la clasificación ─────────────
-p_scatter_lisa <- ggplot(modelo_sf_s,
-                         aes(x = log_Qdens,
-                             y = lag_raw,
-                             colour = cluster_raw)) +
-  geom_point(alpha = 0.8, size = 1) +
+## 4 ▸ (a) Scatter Moran local -----------------------------------------------
+p_scatter <- ggplot(scatter_df,
+                    aes(log_Qdens, lag_raw,
+                        colour = cluster_raw,
+                        alpha  = cluster_sig)) +          # α sólo a sig.
+  geom_point(size = .9) +
+  scale_alpha_manual(values = c("No" = 1, "Sí" = .85), guide = "none") +
   geom_smooth(method = "lm", se = FALSE,
-              colour = "black", linewidth = 0.5) +
+              colour = "black", linewidth = .45) +
   geom_hline(yintercept = y0, linetype = "dashed", colour = "grey60") +
   geom_vline(xintercept = x0, linetype = "dashed", colour = "grey60") +
-  scale_colour_manual(values = col_lisa, name = "Clúster LISA") +
-  labs(x = "log₁₀(Q / Área)",
-       y = "Lag espacial",
-       title = "Diagrama de dispersión Moran local") +
+  scale_colour_manual(values = col_lisa, name = "Clúster LISA", drop = FALSE) +
+  guides(colour = guide_legend(override.aes = list(size = 3))) +
+  annotate("text", x = -Inf, y =  Inf, hjust = -0.05, vjust = 1.1,
+           label = txt_I, size = 3.5, fontface = "italic") +
+  labs(x = expression(log[10]~"(Q / área)"),   # ← tilde ~ corregida
+       y = "Lag espacial (W·y)",
+       title = "Dispersión Moran local") +
   theme_minimal(base_size = 11) +
   theme(legend.position = "right")
 
-## ── 3. Mapa de clústeres y mapa de Ii (igual que antes) ───────────────────
-p_moran_lisa <- ggplot(modelo_sf_s) +
+## 5 ▸ (b) Mapa de clústeres --------------------------------------------------
+p_clusters <- ggplot(plot_df) +
   geom_sf(aes(fill = cluster_raw), colour = NA) +
-  scale_fill_manual(values = col_lisa, na.value = "white",
-                    name = "Clúster LISA") +
-  labs(title = "Mapa: clústeres LISA de log_Qdens") +
-  theme_minimal(base_size = 11) +
-  theme(legend.position = "right")
-
-p_ii_mapa <- ggplot(modelo_sf_s) +
-  geom_sf(aes(fill = Ii_raw), colour = NA) +
-  scale_fill_viridis_c(name = "Ii", option = "magma",
-                       direction = -1, na.value = "white") +
-  labs(title = "Mapa: valor local del estadístico Ii") +
+  scale_fill_manual(values = col_lisa, name = "Clúster LISA",
+                    drop = FALSE, na.translate = FALSE) +
+  labs(title = "Mapa de clústeres LISA") +
   theme_minimal(base_size = 11)
 
-## ── 4. Tripanel sin leyenda duplicada ─────────────────────────────────────
-p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa +
-  patchwork::plot_layout(ncol = 3, guides = "auto")
+## 6 ▸ (c) Mapa de Ii ---------------------------------------------------------
+p_ii <- ggplot(plot_df) +
+  geom_sf(aes(fill = Ii_raw), colour = NA) +
+  scale_fill_viridis_c(name = "Ii local",
+                       option = "magma", direction = -1,
+                       na.value = "white") +
+  labs(title = "Mapa de valores Ii") +
+  theme_minimal(base_size = 11)
 
-ggplot2::ggsave(
-  filename = here::here("Figures", "moran_local_tripanel.png"),
-  plot     = p_lisa_tripanel,
-  width    = 15, height = 5, dpi = 300
+## 7 ▸ Tripanel ---------------------------------------------------------------
+p_lisa_tripanel <- (p_scatter | p_clusters | p_ii) +
+  patchwork::plot_layout(guides = "auto")
+
+ggsave(
+  here::here("Figures", "moran_local_tripanel_new.png"),
+  plot   = p_lisa_tripanel,
+  width  = 15, height = 5, dpi = 300
 )
 
+p_lisa_tripanel     # se muestra en el cuaderno
+
+
+
 ```
+
+
+### 3.3 Conclusiones del análisis de autocorrelación espacial
+
+El Moran I global (≈ 0,08; p < 0,001) revela dependencia espacial positiva, aunque de magnitud moderada. El valor se atenúa porque la autocorrelación se concentra en focos concretos: extensas zonas Low-Low, caracterizadas por pedodiversidad homogénea, y corredores Low-High / High-Low que señalan transiciones nítidas entre dominios contrastantes. Los núcleos High-High son escasos y localizados, lo que reduce el promedio global.
+
+La aparente discrepancia entre la nube de puntos High-Low del scatter-plot y su escasa superficie en el mapa se explica por la escala: muchos polígonos High-Low son parches pequeñísimos. En el scatter cada uno aporta un punto; en el mapa, al dibujarlos sin borde y a escala nacional, quedan casi invisibles. Inversamente, los Low-High suelen ser franjas anchas en los márgenes de los dominios Low-Low y, por eso, ocupan más área cartográfica pero generan menos puntos.
+
+Esta heterogeneidad espacial justifica añadir un componente espacial en los modelos posteriores.
+
+Para eliminar autocorrelación de los residuos basta un SAR-error / SEM.
+
+Si se desea cuantificar la varianza espacial o incorporar jerarquías (p. ej. era geológica), son preferibles un CAR (INLA) o modelos mixtos con efecto espacial aleatorio.
+
+## 4. Modelo de dependencia y heterogeneidad espacial INLA
+
+```{r}
+
+
+## ── 1 · Sub-vecindad sin islas ─────────────────────────────────────────────
+# keep_log  →  vector lógico ya definido (dato ≠ NA  y  ≥1 vecino con dato)
+nb_sub <- spdep::subset.nb(nb_queen, subset = keep_log)            # lista vecinos
+if (any(spdep::card(nb_sub) == 0)) stop("aún quedan polígonos sin vecinos")
+
+## ── 2 · Matriz de adyacencia binaria 0/1 (estilo = “B”) ────────────────────
+A_bin <- spdep::nb2mat(nb_sub, style = "B", zero.policy = TRUE)    # OK
+# filas/columnas = n_valid  (≈ 41 500, no 43 384)
+
+## ── 3 · Fichero graph que INLA lee automáticamente ────────────────────────
+# (opción más segura cuando la matriz es grande)
+queen_graph <- "queen_sub.graph"
+nb2INLA(file = queen_graph, nb = nb_sub)    # crea el .graph en disco
+
+## ── 4 · Índice numérico de polígono dentro del subconjunto ────────────────
+modelo_sf$id_poly <- NA_integer_
+modelo_sf$id_poly[keep_log] <- seq_len(sum(keep_log))   # 1…n_valid
+
+## ── 5 · Fórmula BYM2 (dependencia + heterogeneidad) ───────────────────────
+formula_bym2 <- log_Qdens ~
+  dem_media_z + pendiente_media_z +
+  lst_media_z + precip_media_z +
+  log_dem_cv_z + log_pendiente_cv_z +
+  log_lst_cv_temporal_z + log_precip_cv_temporal_z +
+  f(era_geo, model = "iid") +                # intercepto por era
+  f(id_poly, model = "bym2",
+            graph = queen_graph,
+            scale.model = TRUE)
+
+## ── 6 · Ajuste con INLA ────────────────────────────────────────────────────
+fit_bym2 <- INLA::inla(
+  formula_bym2,
+  data   = as.data.frame(modelo_sf)[keep_log, ],   # mismo subconjunto
+  family = "gaussian",
+  control.predictor = list(compute = TRUE),
+  control.compute   = list(dic = TRUE, waic = TRUE)
+)
+
+
+```
+
+### 4.1 Resumen general
+
+```{r}
+
+# tabla compacta (DIC, WAIC, logLik)
+fit_bym2$dic$dic
+fit_bym2$waic$waic
+summary(fit_bym2)$cpu    # tiempos y nº de iteraciones
+
+
+```
+Qué falta para saber si el modelo es “bueno”
+– Comparar DIC/WAIC con un modelo de referencia (sin término BYM2 ó sin covariables).
+– Ver si los residuos han perdido autocorrelación.
+– Explorar la importancia relativa del campo espacial y de las covariables.
+
+### 4.2 Efectos fijos beta
+
+```{r}
+
+fix_tab <- fit_bym2$summary.fixed[, c("mean","0.025quant","0.975quant")]
+print(round(fix_tab, 3))
+
+# forest‐plot rápido
+ggplot(as.data.frame(fix_tab), aes(x = mean, y = rownames(fix_tab)))+
+  geom_point()+
+  geom_errorbarh(aes(xmin = `0.025quant`, xmax = `0.975quant`), height = .1)+
+  labs(x = "β  (posterior mean ±95% CI)", y = NULL)+
+  theme_minimal()
+
+```
+
+Tabla de coeficientes
+
+```{r}
+tabla_beta <- fit_bym2$summary.fixed |>
+  tibble::rownames_to_column("Covariable") |>
+  dplyr::select(
+    Covariable,
+    `Media`  = mean,
+    `SD`     = sd,
+    `2.5 %`  = `0.025quant`,
+    `97.5 %` = `0.975quant`
+  )
+
+tabla_beta
+```
+
+Los coeficientes del modelo BYM2 confirman que la pedodiversidad ( log₁₀ Q/Área) responde de forma marcada a la topografía, más moderadamente al clima medio y casi de forma marginal a la variabilidad temporal de ese clima.
+
+El intercepto posterior (–3.12 ± 0.01) fija la referencia cuando todas las covariables estandarizadas valen cero. Es decir, el intercepto es el nivel base de pedodiversidad para un polígono con valores promedio de elevación, pendiente, temperatura, precipitación y de sus coeficientes de variación, dentro del gradiente montañoso de la zona de estudio.
+
+Entre las variables de “intensidad” topográfica, la elevación media exhibe el efecto más marcado. El coeficiente para dem_media_z es β ≈ −0.95; como la variable está estandarizada, una unidad-z equivale a 1 045 m (desviación estándar de la elevación en el conjunto). Así, al ascender ≈ 1 kilómetro respecto de la media muestral la densidad logarítmica de pedodiversidad (log₁₀ Q/Área) disminuye en 0.95 unidades. En escala lineal, ese cambio implica que la diversidad esperada se reduce a ≈ 11 % de la observada al nivel inferior (10^−0.95 ≈ 0.11).
+
+La pendiente media mantiene un efecto positivo (β ≈ +0,20). Una desviación estándar en la serie equivale a ≈ 7,8 ° de inclinación (σ = 7,76 °). Elevar la pendiente en ese rango incrementa la densidad logarítmica en 0,20 unidades; al deshacer la transformación (10^0,20 ≈ 1,58) esto significa multiplicar el valor original por 1,58, lo que representa un 58 % más ‒ porque un factor 1,58 equivale a (1,58–1)×100=58% de aumento. Los taludes más inclinados, al parecer, sostienen mosaicos edáficos más ricos, probablemente por la diversidad de microambientes, el drenaje rápido y la continua incorporación de materiales coluviales.
+
+La temperatura superficial (LST media) mantiene un efecto negativo de magnitud intermedia (–0.33): áreas más cálidas —en promedio las más bajas y húmedas— son algo menos diversas que los pisos termo-mesotermos. La precipitación media anual aporta un coeficiente positivo pequeño (0.06) cuya banda de credibilidad, aunque estrecha, sugiere un papel secundario pero real en sostener procesos edafogenéticos variados allí donde el régimen hídrico es más constante.
+
+Los indicadores de heterogeneidad espacial (CV de DEM y de pendiente) divergen con claridad. El log-CV de elevación, que resume el relieve interno de cada polígono, registra el segundo efecto en magnitud (–1.16): a mayor irregularidad altitudinal dentro de la UCS disminuye la diversidad neta, señal de que dominios topográficos muy quebrados concentran tipos de suelo específicos y excluyen otros. En cambio, la variación relativa de la pendiente (β ≈ 0.38) actúa en sentido opuesto: mosaicos dominados por abruptos y lomas suaves alternantes incrementan la riqueza, quizá al habilitar nichos fisionómicamente contrastantes a escala fina.
+
+Las proxies de variabilidad climática interanual (CV temporal de LST y de precipitación) muestran efectos mucho más tenues. Un aumento de una desviación estándar en la variabilidad térmica eleva la pedodiversidad sólo en 0.036 unidades log, mientras que el efecto de la variabilidad pluviométrica apenas supera el umbral de credibilidad (IC 95 % incluye cero en el tercer decimal). En síntesis, la señal climática está dominada por el nivel medio y no por su fluctuación temporal.
+
+Estas magnitudes ya están libres del componente espacial —gracias a la estructura BYM2—, por lo que pueden leerse como efectos “puros”. El resultado subraya la primacía del contexto geomorfológico (elevación, relieve interno y gradientes) sobre el clima en la configuración de núcleos y valles de pedodiversidad a escala nacional.
+
+
+
+### 4.3 Hiper-parámetros BYM2
+
+phi ≈ porción estructurada;
+prec ≡ 1/varianza.
+
+```{r}
+hyper <- fit_bym2$summary.hyperpar
+print(round(hyper, 4))         # incluye phi, prec.iid, prec.spatial
+
+```
+El campo BYM2 reparte la variabilidad residual en tres ingredientes:
+(1) el ruido independiente ε,
+(2) la dependencia espacial estructurada (CAR) entre polígonos vecinos, y
+(3) la heterogeneidad no estructurada asociada a la era geológica.
+
+INLA informa precisiones (1 / varianza). A más precisión, menor varianza.
+
+Ruido independiente.
+La “Precision for the Gaussian observations” es ≈ 1.23, lo que implica una varianza de ≈ 0.81. Es decir, después de restar efectos fijos y aleatorios el modelo deja poca dispersión sin explicar: la mayor parte del patrón de log Qdens queda capturada.  La cifra 0,81 es la varianza que queda (en unidades de log Qdens²) después de que el modelo ha tenido en cuenta covariables + términos aleatorios. Para saber “qué porcentaje hemos explicado” habría que compararla con la varianza de log Qdens antes de modelar (≈ σ²_total). Ese cociente aún no lo hemos calculado.
+
+Varianza espacial total.
+La “Precision for id_poly” es ≈ 1.86 → varianza ≈ 0.54. Existe variación espacial apreciable, pero no desmesurada; buena parte del contraste entre polígonos se recoge en este término.
+
+Mezcla φ del BYM2.
+El parámetro phi es ≈ 0.88 (en una escala 0–1). Un φ tan alto indica que alrededor del 88 % de la varianza espacial se debe a similitud entre vecinos (el componente CAR); solo un 12 % corresponde a heterogeneidad local no correlacionada (iid). Dicho de otro modo, el mosaico de clústeres que vimos con LISA obedece mayormente a dependencia estructurada, no a “ruido” puntual.
+
+Heterogeneidad entre eras geológicas.
+La “Precision for era_geo” supera 5 × 10⁴, lo que se traduce en una varianza de apenas 2 × 10⁻⁵. Prácticamente cero: una vez controladas las covariables, pertenecer a una era u otra no añade dispersión apreciable. El término puede eliminarse sin afectar el ajuste.
+
+En síntesis: el ajuste confirma que la autocorrelación espacial es imprescindible para describir la pedodiversidad (φ alto y varianza CAR distinta de cero), mientras que el factor “era geológica” es irrelevante y podría omitirse. El componente iid residual es moderado, señal de que las covariables han capturado la mayor parte de la señal.
+
+### 4.4 Efectos aleatorios - intercepto por era
+
+```{r}
+
+era_tab <- fit_bym2$summary.random$era_geo[, c("ID","mean","0.025quant","0.975quant")]
+
+era_tab
+
+```
+
+Los interceptos aleatorios estimados para cada era geológica son prácticamente nulos y todos sus intervalos creíbles al 95 % abarcan el cero:
+
+Cz: –0.0015 (–0.0225 ; +0.0153)
+
+Mz: +0.0011 (–0.0158 ; +0.0209)
+
+NA: –0.0019 (–0.0315 ; +0.0173)
+
+Ptz: –0.0039 (–0.0381 ; +0.0128)
+
+Pz: +0.0049 (–0.0115 ; +0.0412)
+
+En otras palabras, ninguna era muestra un desplazamiento sistemático de la pedodiversidad, una vez controlada la combinación de covariables topográficas, climáticas y de variabilidad. La dispersión restante entre polígonos ya se explica por la componente espacial CAR y por el ruido iid; el nivel “era” añade información despreciable. Esto respalda la conclusión extraída del hiper-parámetro de precisión: el término aleatorio por era puede omitirse en modelos simplificados sin sacrificar ajuste ni interpretación.
+
+### 4.5 Campo espacial BYM2
+
+Las columnas 1 : n_valid de fit_bym2$summary.random$id_poly devuelven media y error std por polígono.
+Añádelas al sf y mápalas:
+
+```{r}
+
+ran_spat <- fit_bym2$summary.random$id_poly
+modelo_sf$u_mean   <- NA_real_
+modelo_sf$u_sd     <- NA_real_
+modelo_sf$u_mean[keep_log] <- ran_spat$mean
+modelo_sf$u_sd  [keep_log] <- ran_spat$sd
+
+ggplot(modelo_sf) +
+  geom_sf(aes(fill = u_mean), colour = NA) +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
+  labs(title = "Campo espacial BYM2 – media posterior", fill = "mean(u)") +
+  theme_minimal()
+
+```
+
+Los valores positivos del término espacial ui —los tonos púrpura – negro de la figura— son mucho más extensos y visibles que los clústeres High-High del mapa LISA. Esto no es una contradicción: LISA solo etiqueta como High-High a los polígonos donde tanto el valor propio como el promedio de los vecinos son altos y, en nuestro caso, esos núcleos son minúsculos y muy dispersos, de modo que casi pasan desapercibidos.
+
+El efecto ui  del modelo BYM2, en cambio, resume la parte de la variación que queda sin explicar tras ajustar todas las covariables y la proyecta sobre cada polígono combinando dependencia (CAR) + heterogeneidad local. Al no exigir que los vecinos compartan exactamente la misma magnitud —basta con que la estructura espacial coherente mejore el ajuste global— el campo resultante puede delinear zonas continuas con residuos positivos allí donde LISA solo detectaba puntos aislados.
+
+En la práctica: Tonos púrpura–negro (ui > 0) indican polígonos cuyas densidades de pedodiversidad siguen siendo mayores de lo previsto incluso después de controlar altura, pendiente, clima y variabilidad; se concentran en los flancos andinos y áreas de fuerte compartimentación, por lo que aparecen como manchas bien visibles aunque LISA no los catalogara como High-High.
+
+Tonos amarillos (ui < 0) coinciden, como ya se observó, con los grandes clústeres Low-Low de LISA en valles interandinos y llanuras: allí la diversidad es sistemáticamente menor que la esperada.Así, el mapa de ui
+completa la lectura exploratoria del LISA: confirma las depresiones de baja diversidad y revela, con mayor continuidad espacial, los focos donde la pedodiversidad supera las predicciones ambientales aunque esos focos no formen clústeres High-High según la definición estricta de LISA.
+
+*FAlta: hasta ahora no hemos contrastado numéricamente el campo ui  ni los clústeres LISA con una capa que delinee valles interandinos, llanuras o flancos de cordillera. La frase que señalas no procede de un cálculo mostrado en el cuaderno, sino de una inf erencia visual al superponer mentalmente el mapa sobre la geografía de Colombia (cordilleras al centro-occidente, valles del Cauca y Magdalena en sus depresiones, Llanos al oriente).POdría sobreponerse a hillshade.
+
+Para que esa afirmación sea válida en el manuscrito necesitamos comprobarla de forma reproducible. Hay dos formas rápidas de hacerlo:
+
+1. Cruce espacial con una capa fisiográfica
+Descargar un shapefile vectorial con las principales unidades fisiográficas (cordilleras, valles interandinos, llanuras, piedemontes).
+
+Hacer un st_join() con modelo_sf y calcular, para cada unidad, la media de ui  y la proporción de polígonos en cada categoría LISA.
+
+### 4.6 Predicción y residuos
+
+mostrar dónde el modelo BYM2 todavía sobre- o sub-estima la pedodiversidad. Se parte de la media posterior 
+μi  y se calcula un residuo estilo Pearson
+
+
+```{r}
+
+## ─────────────────────────────────────────────────────────────
+##  Mapa de residuos posteriores  (observado – media posterior)
+## ─────────────────────────────────────────────────────────────
+
+# 1 ▸ extrae media y sd de la lista de predicciones de INLA
+pred_df <- fit_bym2$summary.fitted[ , c("mean","sd")]
+
+modelo_sf$mu_post <- modelo_sf$mu_sd <- NA_real_
+modelo_sf$mu_post[keep_log] <- pred_df$mean   # media posterior
+modelo_sf$mu_sd  [keep_log] <- pred_df$sd     # desv. típ. posterior
+
+# 2 ▸ residuo posterior (escala original ‒log10-)
+modelo_sf$resid <- modelo_sf$log_Qdens - modelo_sf$mu_post
+
+# 3 ▸ paleta Zissou 1 (continua) adaptada como diverging
+pal_cont <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+pal_div  <- c(rev(pal_cont[10:1]), pal_cont[11:90])   # ~amarillo-blanco-púrpura
+
+# 4 ▸ mapa
+p_resid <- ggplot(modelo_sf) +
+  geom_sf(aes(fill = resid), colour = NA) +
+  scale_fill_gradientn(
+    colours = pal_div,
+    limits  = c(-4, 4),          # recorta colas extremas a ±4 u log
+    oob     = scales::squish,    # valores fuera → extremo de la paleta
+    name    = "resid"
+  ) +
+  labs(title = "Residuos posteriores (observado – media posterior)") +
+  theme_minimal()
+
+p_resid            # se renderiza en el cuaderno
+
+
+```
+amarillo → naranjas ( > 0 )
+indican sub-predicción: la pedodiversidad observada es mayor que la estimada por el modelo;
+
+verde-azules ( < 0 )
+señalan sobre-predicción: la pedodiversidad observada es menor que la estimada;
+
+corresponden a ajuste satisfactorio.
+
+La dispersión de colores y la ausencia de bandas extensas de un mismo signo muestran que no persisten patrones espaciales sistemáticos. Un test de Moran sobre los residuos (FALTA),  respalda??? que la autocorrelación residual es insignificante y que el término espacial BYM2 cumplió su función de absorber la dependencia.
+
+
+Esos parches azulados del extremo sur ― donde el modelo sobre-predice la pedodiversidad ― encajan bastante bien con varias limitaciones prácticas de la cartografía nacional de suelos en la Amazonia y el piedemonte andino-amazónico:
+
+Cobertura de muestreo muy desigual
+Los inventarios históricos (IGAC, IGAC-FAO, proyectos departamentales) apenas pasaban por los grandes ríos navegables y las pistas de colonización. En muchos de esos polígonos sólo existe el mapeo fotointerpretado de los años 1970-1980, con muy pocos perfiles descritos in situ.
+Consecuencia: la cuenta de taxones (Q) está infra-estimada; el modelo, al asumir que los datos reflejan la realidad, la “corrige” al alza → residuos negativos intensos (azules).
+
+Complejidad edáfica sub-muestreada
+El relieve de colinas disectadas, terrazas y abanicos aluviales jóvenes genera suelos muy contrastantes a escalas < 1 km (Fluvisoles, Acrisoles, Plinthosoles, Histosoles localizados). Esa heterogeneidad real no aparece si el polígono se levantó con un único taxón “dominante”.
+Resultado: predicción basada en topografía/clima (que “espera” un mosaico diverso) > diversidad observada → residuo negativo.
+
+Acceso físico y situación de orden público
+Comunidades sin carreteras estables y, durante años, presencia de actores armados dificultaron el trabajo de campo sistemático. Las zonas que mencionas coincidieron con poca o nula actualización catastral/agrónoma.
+Efecto: sesgo de observación más que un fallo real del modelo ambiental.
+
+Qué hacer con esa señal
+Variable de esfuerzo de muestreo
+Incorporar un offset (o covariable) que contabilice número de perfiles/ha o distancia media a vías fluviales y carreteras podría reducir el sesgo.
+
+Validación cruzada espacial estratificada
+Separar esas áreas “poco accesibles” como fold independiente mostraría si el sobre-ajuste es grave o se debe sobre todo a carencia de datos.
+
+Trabajo de campo dirigido
+Si tu objetivo final es un mapa operativo, priorizar muestreos en esos polígonos azulados mejorará tanto la base de datos como la capacidad predictiva.
+
+En síntesis, los azules intensos no significan que el modelo “se equivoque” por mala especificación, sino que extrapola hacia regiones sub-levadas. El diagnóstico es útil: señala exactamente dónde la estrategia de muestreo histórica dejó lagunas que conviene subsanar.
+
+## 5. Lo que falta
+
+Definiendo ya los productos básicos de cada capa—estadísticos globales, betas, hiper-parámetros, efectos aleatorios y residuos—quedan varias comprobaciones y extensiones que conviene completar para que el apartado de resultados y discusión sea sólido y coherente con los objetivos del artículo.
+
+En el bloque (1) ajuste global sólo hemos reportado DIC, WAIC y tiempos de cómputo. Falta contrastar esos indicadores con un modelo de referencia sin término espacial (BYM2 reducido a φ = 0) o, al menos, con el SAR-error frequentista que intentamos al principio. Esa comparación cuantifica la ganancia real de incorporar la estructura CAR. También queda por revisar los “mezcla-beta” internos de INLA (el parámetro κ que controla la precisión de la aproximación de Laplace) para descartar problemas de convergencia; basta con fit_bym2$internal.summary$max.gradient y inla.emarginal sobre el log-marginal likelihood.
+
+En la capa (2) efectos fijos ya tienes los intervalos creíbles y su interpretación, pero sigue pendiente evaluar la colinealidad residual entre covariables (p. ej. con las VIF sobre la matriz X estandarizada) y, sobre todo, representar la contribución relativa de cada bloque de variables (intensidad, variedad y variabilidad) al R² marginal de la respuesta. Eso se obtiene con la descomposición de varianza “variance partitioning” de INLA (inla.qmarginal) o con la versión de partR2 adaptada a LGMs.
+
+Para (3) hiper-parámetros BYM2 ya discutimos magnitud y significado, pero falta la prueba de sensibilidad a los priors. INLA permite re-ajustar el modelo con penalised-complexity priors algo más informativos para la mezcla φ y para la precisión espacial; comparar las nuevas posteriors con las actuales mostrará si las conclusiones dependen del prior inercial que viene por defecto. Además, conviene mapear la ratio σ²_s / σ²_total para ilustrar visualmente qué fracción de varianza absorbe el campo estructurado.
+
+En (4) efectos aleatorios ya tienes la tabla de interceptos por era y el mapa de uᵢ. Faltan dos pasos. Primero, la banda de incertidumbre: un segundo mapa con la desviación típica posterior (u_sd) y un breve comentario sobre dónde el modelo “sabe menos”. Segundo, enlazar cuantitativamente ese campo con la LISA original. El contraste formal es un test de correlación espacial entre uᵢ y los Ii locales—moran.mc(u_mean, lw_sub)—que permitirá afirmar con números, no sólo con inspección ocular, que el BYM2 efectivamente absorbe la mayor parte de los focos Low-Low.
+
+Por último, en (5) predicción y residuos ya generaste el mapa de residuos. Falta el diagnóstico estadístico: histograma o QQ-plot de los residuos normalizados frente a la distribución normal, un correlograma de Moran sobre esos residuos (mismo script que usaste para el correlograma LISA) y, opcionalmente, la curva PIT (Probability Integral Transform) que INLA calcula con control.compute = list(cpo = TRUE). Si el correlograma no muestra p-valores < 0.05 y el QQ-plot no presenta colas gruesas, podrás afirmar que el modelo deja la estructura espacial prácticamente eliminada y que la suposición gaussiana es aceptable.
+
+Con esas verificaciones adicionales—comparación con modelos nulos, partición de varianza por bloques, sensibilidad a priors, incertidumbre del campo uᵢ y diagnóstico exhaustivo de residuos—la sección de resultados cubrirá todos los puntos críticos del modelo BYM2 y cerrará el círculo que iniciaste con el análisis global y local de autocorrelación.

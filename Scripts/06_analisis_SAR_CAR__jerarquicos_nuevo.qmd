@@ -512,7 +512,7 @@ p_lisa_tripanel <- p_scatter_lisa + p_moran_lisa + p_ii_mapa +
   patchwork::plot_layout(ncol = 3, guides = "auto")
 
 ggplot2::ggsave(
-  filename = here::here("Figures", "moran_local_tripanel.png"),
+  filename = here::here("Figures", "moran_local_tripanel_nuevo.png"),
   plot     = p_lisa_tripanel,
   width    = 15, height = 5, dpi = 300
 )
