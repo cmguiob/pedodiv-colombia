@@ -1,5 +1,6 @@
 ---
-title: "Modelos para dependencia y heterogeneidad espacial"
+title: "Modelo de efectos mezclados - SAR para dependencia y heterogeneidad espacial"
+subtitle: "Modelado espacial de pedodiversidad"
 author: "Carlos M. Guío Blanco"
 format: html
 editor: visual
@@ -347,25 +348,16 @@ modelo_df <- sf::st_drop_geometry(modelo_sf)
 
 ## 3. Diagnóstico de autocorrelación espacial (Moran I y LISA)
 
-En esta sección construiremos la malla de vecinos Queen, obtendremos la matriz de
-pesos W, calcularemos la autocorrelación **global** (Moran I) y la
-autocorrelación **local** (LISA).  El objetivo es confirmar la presencia de
-dependencia espacial y localizar *hot-spots* y *cold-spots* de pedodiversidad
-antes de pasar a los modelos SAR / CAR.
-  etc.
+En esta sección construiremos la malla de vecinos Queen, obtendremos la matriz de pesos W, calcularemos la autocorrelación **global** (Moran I) y la autocorrelación **local** (LISA). El objetivo es confirmar la presencia de dependencia espacial y localizar *hot-spots* y *cold-spots* de pedodiversidad antes de pasar a los modelos SAR / CAR. etc.
 
 ### 3.1 Construcción de la red Queen y de la matriz W
 
 El siguiente bloque:
 
-1. prepara un `sf` liviano que conserva solo `id_creado`, `log_Qdens`
-y la geometría;  
-2. simplifica los vértices para acelerar la vecindad;  
-3. desactiva la geometría esférica (`sf_use_s2(FALSE)`) para que
-`poly2nb()` trabaje en 2-D;  
-4. crea la lista de vecinos Queen y la convierte en matriz de pesos
-fila-estandarizada.
-
+1.  prepara un `sf` liviano que conserva solo `id_creado`, `log_Qdens` y la geometría;\
+2.  simplifica los vértices para acelerar la vecindad;\
+3.  desactiva la geometría esférica (`sf_use_s2(FALSE)`) para que `poly2nb()` trabaje en 2-D;\
+4.  crea la lista de vecinos Queen y la convierte en matriz de pesos fila-estandarizada.
 
 ```{r matriz_vecindad}
 
@@ -424,22 +416,13 @@ ggplot() +
 
 En los siguientes chunks se calcula (i) el Moran I global de log_Qdens bajo aleatorización y (ii) los indicadores locales (LISA). Solo se incluyen las UCS que poseen un valor distinto de NA y cumplen uno de estos criterios de vecindad:
 
-Opción A – recomendada (activada por defecto)
-Al menos un vecino tiene log_Qdens ≠ NA.
-Esto evita que el lag se rellene con 0 cuando todos los vecinos carecen de dato, y elimina la franja horizontal artificial del diagrama de dispersión.
+Opción A – recomendada (activada por defecto) Al menos un vecino tiene log_Qdens ≠ NA. Esto evita que el lag se rellene con 0 cuando todos los vecinos carecen de dato, y elimina la franja horizontal artificial del diagrama de dispersión.
 
-Opción B – legacy
-Basta con que el polígono tenga ≥ 1 vecino, sin verificar si esos vecinos presentan datos.
-Úsala solo si necesitas reproducir resultados antiguos; reintroduce la franja horizontal.
+Opción B – legacy Basta con que el polígono tenga ≥ 1 vecino, sin verificar si esos vecinos presentan datos. Úsala solo si necesitas reproducir resultados antiguos; reintroduce la franja horizontal.
 
-Para cambiar de una opción a la otra basta con comentar / des-comentar la línea indicada.
-subset.listw() requiere un vector lógico (TRUE / FALSE), de ahí la conversión de índices a keep_log.
+Para cambiar de una opción a la otra basta con comentar / des-comentar la línea indicada. subset.listw() requiere un vector lógico (TRUE / FALSE), de ahí la conversión de índices a keep_log.
 
-Al activar la opción A se descartan aquellos polígonos cuyos vecinos no tienen dato válido en log_Qdens. En la definición clásica de Moran I, el término 
-𝑊
-𝑦
-Wy (lag espacial) es el promedio ponderado de los valores de los vecinos; si todos esos vecinos son NA, la función de spdep—al operar con zero.policy = TRUE—reemplaza el lag por 0.
-Esos ceros artificiales inflan la semejanza entre la UCS y su vecindario (porque comparan un dato real con 0, valor que suele quedar lejos de la media global), de modo que:
+Al activar la opción A se descartan aquellos polígonos cuyos vecinos no tienen dato válido en log_Qdens. En la definición clásica de Moran I, el término 𝑊 𝑦 Wy (lag espacial) es el promedio ponderado de los valores de los vecinos; si todos esos vecinos son NA, la función de spdep—al operar con zero.policy = TRUE—reemplaza el lag por 0. Esos ceros artificiales inflan la semejanza entre la UCS y su vecindario (porque comparan un dato real con 0, valor que suele quedar lejos de la media global), de modo que:
 
 Con la opción B esos polígonos se mantienen, su lag “0” introduce correlaciones espurias y el Moran I global se sobre-estima.
 
@@ -484,7 +467,7 @@ p_global <- signif(moran_raw$p.value, 3)
 
 ```
 
-Con la misma sub-matriz de pesos (lw_sub) se calculan los indicadores locales (Ii, p-valor, lag espacial) y se categoriza cada UCS como High-High, Low-Low, High-Low, Low-High o No sig. (p > 0.05).
+Con la misma sub-matriz de pesos (lw_sub) se calculan los indicadores locales (Ii, p-valor, lag espacial) y se categoriza cada UCS como High-High, Low-Low, High-Low, Low-High o No sig. (p \> 0.05).
 
 Moran I es un promedio ponderado de todas las covarianzas espaciales; tiende a “diluir” focos muy fuertes cuando hay áreas extensas sin patrón. El Ii (LISA) estandariza cada polígono por la varianza local –por eso puede alcanzar valores de 8-12 incluso cuando I ≈ 0.08. Con un número de UCS grande, un I pequeño puede ser altamente significativo (p ≪ 0.01) y justificar la búsqueda de clústeres locales.
 
@@ -641,10 +624,9 @@ p_lisa_tripanel     # se muestra en el cuaderno
 
 ```
 
-
 ### 3.3 Conclusiones del análisis de autocorrelación espacial
 
-El Moran I global (≈ 0,08; p < 0,001) revela dependencia espacial positiva, aunque de magnitud moderada. El valor se atenúa porque la autocorrelación se concentra en focos concretos: extensas zonas Low-Low, caracterizadas por pedodiversidad homogénea, y corredores Low-High / High-Low que señalan transiciones nítidas entre dominios contrastantes. Los núcleos High-High son escasos y localizados, lo que reduce el promedio global.
+El Moran I global (≈ 0,08; p \< 0,001) revela dependencia espacial positiva, aunque de magnitud moderada. El valor se atenúa porque la autocorrelación se concentra en focos concretos: extensas zonas Low-Low, caracterizadas por pedodiversidad homogénea, y corredores Low-High / High-Low que señalan transiciones nítidas entre dominios contrastantes. Los núcleos High-High son escasos y localizados, lo que reduce el promedio global.
 
 La aparente discrepancia entre la nube de puntos High-Low del scatter-plot y su escasa superficie en el mapa se explica por la escala: muchos polígonos High-Low son parches pequeñísimos. En el scatter cada uno aporta un punto; en el mapa, al dibujarlos sin borde y a escala nacional, quedan casi invisibles. Inversamente, los Low-High suelen ser franjas anchas en los márgenes de los dominios Low-Low y, por eso, ocupan más área cartográfica pero generan menos puntos.
 
@@ -711,10 +693,8 @@ summary(fit_bym2)$cpu    # tiempos y nº de iteraciones
 
 
 ```
-Qué falta para saber si el modelo es “bueno”
-– Comparar DIC/WAIC con un modelo de referencia (sin término BYM2 ó sin covariables).
-– Ver si los residuos han perdido autocorrelación.
-– Explorar la importancia relativa del campo espacial y de las covariables.
+
+Qué falta para saber si el modelo es “bueno” – Comparar DIC/WAIC con un modelo de referencia (sin término BYM2 ó sin covariables). – Ver si los residuos han perdido autocorrelación. – Explorar la importancia relativa del campo espacial y de las covariables.
 
 ### 4.2 Efectos fijos beta
 
@@ -752,9 +732,9 @@ Los coeficientes del modelo BYM2 confirman que la pedodiversidad ( log₁₀ Q/�
 
 El intercepto posterior (–3.12 ± 0.01) fija la referencia cuando todas las covariables estandarizadas valen cero. Es decir, el intercepto es el nivel base de pedodiversidad para un polígono con valores promedio de elevación, pendiente, temperatura, precipitación y de sus coeficientes de variación, dentro del gradiente montañoso de la zona de estudio.
 
-Entre las variables de “intensidad” topográfica, la elevación media exhibe el efecto más marcado. El coeficiente para dem_media_z es β ≈ −0.95; como la variable está estandarizada, una unidad-z equivale a 1 045 m (desviación estándar de la elevación en el conjunto). Así, al ascender ≈ 1 kilómetro respecto de la media muestral la densidad logarítmica de pedodiversidad (log₁₀ Q/Área) disminuye en 0.95 unidades. En escala lineal, ese cambio implica que la diversidad esperada se reduce a ≈ 11 % de la observada al nivel inferior (10^−0.95 ≈ 0.11).
+Entre las variables de “intensidad” topográfica, la elevación media exhibe el efecto más marcado. El coeficiente para dem_media_z es β ≈ −0.95; como la variable está estandarizada, una unidad-z equivale a 1 045 m (desviación estándar de la elevación en el conjunto). Así, al ascender ≈ 1 kilómetro respecto de la media muestral la densidad logarítmica de pedodiversidad (log₁₀ Q/Área) disminuye en 0.95 unidades. En escala lineal, ese cambio implica que la diversidad esperada se reduce a ≈ 11 % de la observada al nivel inferior (10\^−0.95 ≈ 0.11).
 
-La pendiente media mantiene un efecto positivo (β ≈ +0,20). Una desviación estándar en la serie equivale a ≈ 7,8 ° de inclinación (σ = 7,76 °). Elevar la pendiente en ese rango incrementa la densidad logarítmica en 0,20 unidades; al deshacer la transformación (10^0,20 ≈ 1,58) esto significa multiplicar el valor original por 1,58, lo que representa un 58 % más ‒ porque un factor 1,58 equivale a (1,58–1)×100=58% de aumento. Los taludes más inclinados, al parecer, sostienen mosaicos edáficos más ricos, probablemente por la diversidad de microambientes, el drenaje rápido y la continua incorporación de materiales coluviales.
+La pendiente media mantiene un efecto positivo (β ≈ +0,20). Una desviación estándar en la serie equivale a ≈ 7,8 ° de inclinación (σ = 7,76 °). Elevar la pendiente en ese rango incrementa la densidad logarítmica en 0,20 unidades; al deshacer la transformación (10\^0,20 ≈ 1,58) esto significa multiplicar el valor original por 1,58, lo que representa un 58 % más ‒ porque un factor 1,58 equivale a (1,58–1)×100=58% de aumento. Los taludes más inclinados, al parecer, sostienen mosaicos edáficos más ricos, probablemente por la diversidad de microambientes, el drenaje rápido y la continua incorporación de materiales coluviales.
 
 La temperatura superficial (LST media) mantiene un efecto negativo de magnitud intermedia (–0.33): áreas más cálidas —en promedio las más bajas y húmedas— son algo menos diversas que los pisos termo-mesotermos. La precipitación media anual aporta un coeficiente positivo pequeño (0.06) cuya banda de credibilidad, aunque estrecha, sugiere un papel secundario pero real en sostener procesos edafogenéticos variados allí donde el régimen hídrico es más constante.
 
@@ -764,36 +744,27 @@ Las proxies de variabilidad climática interanual (CV temporal de LST y de preci
 
 Estas magnitudes ya están libres del componente espacial —gracias a la estructura BYM2—, por lo que pueden leerse como efectos “puros”. El resultado subraya la primacía del contexto geomorfológico (elevación, relieve interno y gradientes) sobre el clima en la configuración de núcleos y valles de pedodiversidad a escala nacional.
 
-
-
 ### 4.3 Hiper-parámetros BYM2
 
-phi ≈ porción estructurada;
-prec ≡ 1/varianza.
+phi ≈ porción estructurada; prec ≡ 1/varianza.
 
 ```{r}
 hyper <- fit_bym2$summary.hyperpar
 print(round(hyper, 4))         # incluye phi, prec.iid, prec.spatial
 
 ```
-El campo BYM2 reparte la variabilidad residual en tres ingredientes:
-(1) el ruido independiente ε,
-(2) la dependencia espacial estructurada (CAR) entre polígonos vecinos, y
-(3) la heterogeneidad no estructurada asociada a la era geológica.
+
+El campo BYM2 reparte la variabilidad residual en tres ingredientes: (1) el ruido independiente ε, (2) la dependencia espacial estructurada (CAR) entre polígonos vecinos, y (3) la heterogeneidad no estructurada asociada a la era geológica.
 
 INLA informa precisiones (1 / varianza). A más precisión, menor varianza.
 
-Ruido independiente.
-La “Precision for the Gaussian observations” es ≈ 1.23, lo que implica una varianza de ≈ 0.81. Es decir, después de restar efectos fijos y aleatorios el modelo deja poca dispersión sin explicar: la mayor parte del patrón de log Qdens queda capturada.  La cifra 0,81 es la varianza que queda (en unidades de log Qdens²) después de que el modelo ha tenido en cuenta covariables + términos aleatorios. Para saber “qué porcentaje hemos explicado” habría que compararla con la varianza de log Qdens antes de modelar (≈ σ²_total). Ese cociente aún no lo hemos calculado.
+Ruido independiente. La “Precision for the Gaussian observations” es ≈ 1.23, lo que implica una varianza de ≈ 0.81. Es decir, después de restar efectos fijos y aleatorios el modelo deja poca dispersión sin explicar: la mayor parte del patrón de log Qdens queda capturada. La cifra 0,81 es la varianza que queda (en unidades de log Qdens²) después de que el modelo ha tenido en cuenta covariables + términos aleatorios. Para saber “qué porcentaje hemos explicado” habría que compararla con la varianza de log Qdens antes de modelar (≈ σ²_total). Ese cociente aún no lo hemos calculado.
 
-Varianza espacial total.
-La “Precision for id_poly” es ≈ 1.86 → varianza ≈ 0.54. Existe variación espacial apreciable, pero no desmesurada; buena parte del contraste entre polígonos se recoge en este término.
+Varianza espacial total. La “Precision for id_poly” es ≈ 1.86 → varianza ≈ 0.54. Existe variación espacial apreciable, pero no desmesurada; buena parte del contraste entre polígonos se recoge en este término.
 
-Mezcla φ del BYM2.
-El parámetro phi es ≈ 0.88 (en una escala 0–1). Un φ tan alto indica que alrededor del 88 % de la varianza espacial se debe a similitud entre vecinos (el componente CAR); solo un 12 % corresponde a heterogeneidad local no correlacionada (iid). Dicho de otro modo, el mosaico de clústeres que vimos con LISA obedece mayormente a dependencia estructurada, no a “ruido” puntual.
+Mezcla φ del BYM2. El parámetro phi es ≈ 0.88 (en una escala 0–1). Un φ tan alto indica que alrededor del 88 % de la varianza espacial se debe a similitud entre vecinos (el componente CAR); solo un 12 % corresponde a heterogeneidad local no correlacionada (iid). Dicho de otro modo, el mosaico de clústeres que vimos con LISA obedece mayormente a dependencia estructurada, no a “ruido” puntual.
 
-Heterogeneidad entre eras geológicas.
-La “Precision for era_geo” supera 5 × 10⁴, lo que se traduce en una varianza de apenas 2 × 10⁻⁵. Prácticamente cero: una vez controladas las covariables, pertenecer a una era u otra no añade dispersión apreciable. El término puede eliminarse sin afectar el ajuste.
+Heterogeneidad entre eras geológicas. La “Precision for era_geo” supera 5 × 10⁴, lo que se traduce en una varianza de apenas 2 × 10⁻⁵. Prácticamente cero: una vez controladas las covariables, pertenecer a una era u otra no añade dispersión apreciable. El término puede eliminarse sin afectar el ajuste.
 
 En síntesis: el ajuste confirma que la autocorrelación espacial es imprescindible para describir la pedodiversidad (φ alto y varianza CAR distinta de cero), mientras que el factor “era geológica” es irrelevante y podría omitirse. El componente iid residual es moderado, señal de que las covariables han capturado la mayor parte de la señal.
 
@@ -823,8 +794,7 @@ En otras palabras, ninguna era muestra un desplazamiento sistemático de la pedo
 
 ### 4.5 Campo espacial BYM2
 
-Las columnas 1 : n_valid de fit_bym2$summary.random$id_poly devuelven media y error std por polígono.
-Añádelas al sf y mápalas:
+Las columnas 1 : n_valid de fit_bym2$summary.random$id_poly devuelven media y error std por polígono. Añádelas al sf y mápalas:
 
 ```{r}
 
@@ -844,27 +814,23 @@ ggplot(modelo_sf) +
 
 Los valores positivos del término espacial ui —los tonos púrpura – negro de la figura— son mucho más extensos y visibles que los clústeres High-High del mapa LISA. Esto no es una contradicción: LISA solo etiqueta como High-High a los polígonos donde tanto el valor propio como el promedio de los vecinos son altos y, en nuestro caso, esos núcleos son minúsculos y muy dispersos, de modo que casi pasan desapercibidos.
 
-El efecto ui  del modelo BYM2, en cambio, resume la parte de la variación que queda sin explicar tras ajustar todas las covariables y la proyecta sobre cada polígono combinando dependencia (CAR) + heterogeneidad local. Al no exigir que los vecinos compartan exactamente la misma magnitud —basta con que la estructura espacial coherente mejore el ajuste global— el campo resultante puede delinear zonas continuas con residuos positivos allí donde LISA solo detectaba puntos aislados.
+El efecto ui del modelo BYM2, en cambio, resume la parte de la variación que queda sin explicar tras ajustar todas las covariables y la proyecta sobre cada polígono combinando dependencia (CAR) + heterogeneidad local. Al no exigir que los vecinos compartan exactamente la misma magnitud —basta con que la estructura espacial coherente mejore el ajuste global— el campo resultante puede delinear zonas continuas con residuos positivos allí donde LISA solo detectaba puntos aislados.
 
-En la práctica: Tonos púrpura–negro (ui > 0) indican polígonos cuyas densidades de pedodiversidad siguen siendo mayores de lo previsto incluso después de controlar altura, pendiente, clima y variabilidad; se concentran en los flancos andinos y áreas de fuerte compartimentación, por lo que aparecen como manchas bien visibles aunque LISA no los catalogara como High-High.
+En la práctica: Tonos púrpura–negro (ui \> 0) indican polígonos cuyas densidades de pedodiversidad siguen siendo mayores de lo previsto incluso después de controlar altura, pendiente, clima y variabilidad; se concentran en los flancos andinos y áreas de fuerte compartimentación, por lo que aparecen como manchas bien visibles aunque LISA no los catalogara como High-High.
 
-Tonos amarillos (ui < 0) coinciden, como ya se observó, con los grandes clústeres Low-Low de LISA en valles interandinos y llanuras: allí la diversidad es sistemáticamente menor que la esperada.Así, el mapa de ui
-completa la lectura exploratoria del LISA: confirma las depresiones de baja diversidad y revela, con mayor continuidad espacial, los focos donde la pedodiversidad supera las predicciones ambientales aunque esos focos no formen clústeres High-High según la definición estricta de LISA.
+Tonos amarillos (ui \< 0) coinciden, como ya se observó, con los grandes clústeres Low-Low de LISA en valles interandinos y llanuras: allí la diversidad es sistemáticamente menor que la esperada.Así, el mapa de ui completa la lectura exploratoria del LISA: confirma las depresiones de baja diversidad y revela, con mayor continuidad espacial, los focos donde la pedodiversidad supera las predicciones ambientales aunque esos focos no formen clústeres High-High según la definición estricta de LISA.
 
-*FAlta: hasta ahora no hemos contrastado numéricamente el campo ui  ni los clústeres LISA con una capa que delinee valles interandinos, llanuras o flancos de cordillera. La frase que señalas no procede de un cálculo mostrado en el cuaderno, sino de una inf erencia visual al superponer mentalmente el mapa sobre la geografía de Colombia (cordilleras al centro-occidente, valles del Cauca y Magdalena en sus depresiones, Llanos al oriente).POdría sobreponerse a hillshade.
+\*FAlta: hasta ahora no hemos contrastado numéricamente el campo ui ni los clústeres LISA con una capa que delinee valles interandinos, llanuras o flancos de cordillera. La frase que señalas no procede de un cálculo mostrado en el cuaderno, sino de una inf erencia visual al superponer mentalmente el mapa sobre la geografía de Colombia (cordilleras al centro-occidente, valles del Cauca y Magdalena en sus depresiones, Llanos al oriente).POdría sobreponerse a hillshade.
 
 Para que esa afirmación sea válida en el manuscrito necesitamos comprobarla de forma reproducible. Hay dos formas rápidas de hacerlo:
 
-1. Cruce espacial con una capa fisiográfica
-Descargar un shapefile vectorial con las principales unidades fisiográficas (cordilleras, valles interandinos, llanuras, piedemontes).
+1.  Cruce espacial con una capa fisiográfica Descargar un shapefile vectorial con las principales unidades fisiográficas (cordilleras, valles interandinos, llanuras, piedemontes).
 
-Hacer un st_join() con modelo_sf y calcular, para cada unidad, la media de ui  y la proporción de polígonos en cada categoría LISA.
+Hacer un st_join() con modelo_sf y calcular, para cada unidad, la media de ui y la proporción de polígonos en cada categoría LISA.
 
 ### 4.6 Predicción y residuos
 
-mostrar dónde el modelo BYM2 todavía sobre- o sub-estima la pedodiversidad. Se parte de la media posterior 
-μi  y se calcula un residuo estilo Pearson
-
+mostrar dónde el modelo BYM2 todavía sobre- o sub-estima la pedodiversidad. Se parte de la media posterior μi y se calcula un residuo estilo Pearson
 
 ```{r}
 
@@ -902,40 +868,28 @@ p_resid            # se renderiza en el cuaderno
 
 
 ```
-amarillo → naranjas ( > 0 )
-indican sub-predicción: la pedodiversidad observada es mayor que la estimada por el modelo;
 
-verde-azules ( < 0 )
-señalan sobre-predicción: la pedodiversidad observada es menor que la estimada;
+amarillo → naranjas ( \> 0 ) indican sub-predicción: la pedodiversidad observada es mayor que la estimada por el modelo;
+
+verde-azules ( \< 0 ) señalan sobre-predicción: la pedodiversidad observada es menor que la estimada;
 
 corresponden a ajuste satisfactorio.
 
-La dispersión de colores y la ausencia de bandas extensas de un mismo signo muestran que no persisten patrones espaciales sistemáticos. Un test de Moran sobre los residuos (FALTA),  respalda??? que la autocorrelación residual es insignificante y que el término espacial BYM2 cumplió su función de absorber la dependencia.
-
+La dispersión de colores y la ausencia de bandas extensas de un mismo signo muestran que no persisten patrones espaciales sistemáticos. Un test de Moran sobre los residuos (FALTA), respalda??? que la autocorrelación residual es insignificante y que el término espacial BYM2 cumplió su función de absorber la dependencia.
 
 Esos parches azulados del extremo sur ― donde el modelo sobre-predice la pedodiversidad ― encajan bastante bien con varias limitaciones prácticas de la cartografía nacional de suelos en la Amazonia y el piedemonte andino-amazónico:
 
-Cobertura de muestreo muy desigual
-Los inventarios históricos (IGAC, IGAC-FAO, proyectos departamentales) apenas pasaban por los grandes ríos navegables y las pistas de colonización. En muchos de esos polígonos sólo existe el mapeo fotointerpretado de los años 1970-1980, con muy pocos perfiles descritos in situ.
-Consecuencia: la cuenta de taxones (Q) está infra-estimada; el modelo, al asumir que los datos reflejan la realidad, la “corrige” al alza → residuos negativos intensos (azules).
+Cobertura de muestreo muy desigual Los inventarios históricos (IGAC, IGAC-FAO, proyectos departamentales) apenas pasaban por los grandes ríos navegables y las pistas de colonización. En muchos de esos polígonos sólo existe el mapeo fotointerpretado de los años 1970-1980, con muy pocos perfiles descritos in situ. Consecuencia: la cuenta de taxones (Q) está infra-estimada; el modelo, al asumir que los datos reflejan la realidad, la “corrige” al alza → residuos negativos intensos (azules).
 
-Complejidad edáfica sub-muestreada
-El relieve de colinas disectadas, terrazas y abanicos aluviales jóvenes genera suelos muy contrastantes a escalas < 1 km (Fluvisoles, Acrisoles, Plinthosoles, Histosoles localizados). Esa heterogeneidad real no aparece si el polígono se levantó con un único taxón “dominante”.
-Resultado: predicción basada en topografía/clima (que “espera” un mosaico diverso) > diversidad observada → residuo negativo.
+Complejidad edáfica sub-muestreada El relieve de colinas disectadas, terrazas y abanicos aluviales jóvenes genera suelos muy contrastantes a escalas \< 1 km (Fluvisoles, Acrisoles, Plinthosoles, Histosoles localizados). Esa heterogeneidad real no aparece si el polígono se levantó con un único taxón “dominante”. Resultado: predicción basada en topografía/clima (que “espera” un mosaico diverso) \> diversidad observada → residuo negativo.
 
-Acceso físico y situación de orden público
-Comunidades sin carreteras estables y, durante años, presencia de actores armados dificultaron el trabajo de campo sistemático. Las zonas que mencionas coincidieron con poca o nula actualización catastral/agrónoma.
-Efecto: sesgo de observación más que un fallo real del modelo ambiental.
+Acceso físico y situación de orden público Comunidades sin carreteras estables y, durante años, presencia de actores armados dificultaron el trabajo de campo sistemático. Las zonas que mencionas coincidieron con poca o nula actualización catastral/agrónoma. Efecto: sesgo de observación más que un fallo real del modelo ambiental.
 
-Qué hacer con esa señal
-Variable de esfuerzo de muestreo
-Incorporar un offset (o covariable) que contabilice número de perfiles/ha o distancia media a vías fluviales y carreteras podría reducir el sesgo.
+Qué hacer con esa señal Variable de esfuerzo de muestreo Incorporar un offset (o covariable) que contabilice número de perfiles/ha o distancia media a vías fluviales y carreteras podría reducir el sesgo.
 
-Validación cruzada espacial estratificada
-Separar esas áreas “poco accesibles” como fold independiente mostraría si el sobre-ajuste es grave o se debe sobre todo a carencia de datos.
+Validación cruzada espacial estratificada Separar esas áreas “poco accesibles” como fold independiente mostraría si el sobre-ajuste es grave o se debe sobre todo a carencia de datos.
 
-Trabajo de campo dirigido
-Si tu objetivo final es un mapa operativo, priorizar muestreos en esos polígonos azulados mejorará tanto la base de datos como la capacidad predictiva.
+Trabajo de campo dirigido Si tu objetivo final es un mapa operativo, priorizar muestreos en esos polígonos azulados mejorará tanto la base de datos como la capacidad predictiva.
 
 En síntesis, los azules intensos no significan que el modelo “se equivoque” por mala especificación, sino que extrapola hacia regiones sub-levadas. El diagnóstico es útil: señala exactamente dónde la estrategia de muestreo histórica dejó lagunas que conviene subsanar.
 
@@ -951,6 +905,6 @@ Para (3) hiper-parámetros BYM2 ya discutimos magnitud y significado, pero falta
 
 En (4) efectos aleatorios ya tienes la tabla de interceptos por era y el mapa de uᵢ. Faltan dos pasos. Primero, la banda de incertidumbre: un segundo mapa con la desviación típica posterior (u_sd) y un breve comentario sobre dónde el modelo “sabe menos”. Segundo, enlazar cuantitativamente ese campo con la LISA original. El contraste formal es un test de correlación espacial entre uᵢ y los Ii locales—moran.mc(u_mean, lw_sub)—que permitirá afirmar con números, no sólo con inspección ocular, que el BYM2 efectivamente absorbe la mayor parte de los focos Low-Low.
 
-Por último, en (5) predicción y residuos ya generaste el mapa de residuos. Falta el diagnóstico estadístico: histograma o QQ-plot de los residuos normalizados frente a la distribución normal, un correlograma de Moran sobre esos residuos (mismo script que usaste para el correlograma LISA) y, opcionalmente, la curva PIT (Probability Integral Transform) que INLA calcula con control.compute = list(cpo = TRUE). Si el correlograma no muestra p-valores < 0.05 y el QQ-plot no presenta colas gruesas, podrás afirmar que el modelo deja la estructura espacial prácticamente eliminada y que la suposición gaussiana es aceptable.
+Por último, en (5) predicción y residuos ya generaste el mapa de residuos. Falta el diagnóstico estadístico: histograma o QQ-plot de los residuos normalizados frente a la distribución normal, un correlograma de Moran sobre esos residuos (mismo script que usaste para el correlograma LISA) y, opcionalmente, la curva PIT (Probability Integral Transform) que INLA calcula con control.compute = list(cpo = TRUE). Si el correlograma no muestra p-valores \< 0.05 y el QQ-plot no presenta colas gruesas, podrás afirmar que el modelo deja la estructura espacial prácticamente eliminada y que la suposición gaussiana es aceptable.
 
 Con esas verificaciones adicionales—comparación con modelos nulos, partición de varianza por bloques, sensibilidad a priors, incertidumbre del campo uᵢ y diagnóstico exhaustivo de residuos—la sección de resultados cubrirá todos los puntos críticos del modelo BYM2 y cerrará el círculo que iniciaste con el análisis global y local de autocorrelación.
