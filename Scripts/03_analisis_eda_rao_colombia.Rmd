@@ -60,6 +60,13 @@ ucs_sf_4326 <- ucs_rao_sf |>
 ucs_sf_4326 <- ucs_sf_4326[!st_is_empty(ucs_sf_4326), ]
 
 ```
+```{r}
+# Paletas continuas y discretas
+pal_resp <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+pal_qualitat <- paletteer::paletteer_d("wesanderson::Zissou1", 5)
+```
+
+
 
 ## 2. Análisis descriptivo
 
@@ -216,14 +223,14 @@ histo_resp <- function(df, var, title, xlab,
 
   g <- ggplot(df, aes({{ var }})) +
     ggdist::stat_histinterval(
-      fill = "#56B4E9", colour = "black",
+      fill = pal_qualitat[2], colour = "grey20",
       .width = c(0.5, 0.9),
       bins = bins, binwidth = binwidth
     ) +
     geom_density(aes(y = after_stat(scaled)),
                  colour = "#FFD700", linewidth = 0.8) +
-    geom_vline(xintercept = fence_low, linetype = "dashed", colour = "grey30") +
-    geom_vline(xintercept = fence_hi,  linetype = "dashed", colour = "grey30") +
+    geom_vline(xintercept = fence_low, linetype = "dashed", colour = "grey20") +
+    geom_vline(xintercept = fence_hi,  linetype = "dashed", colour = "grey20") +
     labs(title = title, x = xlab, y = "Frecuencia") +
     theme_minimal(base_size = 12)
 
@@ -292,10 +299,6 @@ Visualizamos la variación espacial de cada métrica de diversidad (Q, Q², Q/A,
 
 ```{r mapas}
 
-# Paleta continua para todos los mapas --------------------------------------
-
-pal_resp <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
-
 # Función genérica de mapa ----------------------------------------------------
 
 map_resp <- function(df, var, title_expr, legend_lab,
@@ -319,7 +322,7 @@ map_resp <- function(df, var, title_expr, legend_lab,
       labels   = labels_fn
     ) +
     labs(title = title_expr) +
-    theme_minimal() +
+    theme_minimal(base_size = 12) +
     theme(legend.justification = c("right", "top"))
 }
 
@@ -372,6 +375,22 @@ ggsave(
 
 
 ```
+
+Se crea una gráfica final para el artículo
+
+```{r}
+
+p_respuesta_eda <- (p_Q | p_logQdens) / (p_map_Q  | p_map_logQdens) + plot_layout(heights = c(1, 3))
+
+ggsave(
+  here::here("Figures", "var_respuesta_eda.png"),
+  plot   = p_respuesta_eda,
+  width  = 10, height = 10, dpi = 350
+)
+
+
+```
+
 
 ### 2.4 Cuantificar el efecto del área
 
