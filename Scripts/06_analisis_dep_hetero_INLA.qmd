@@ -1,31 +1,25 @@
 ---
-title: "Modelo INLA-BYM para dependencia y heterogeneidad espacial"
+title: "Modelo INLA-besag-iid para dependencia y heterogeneidad espacial"
 subtitle: "Modelado espacial de pedodiversidad"
 author: "Carlos M. Guío Blanco"
 format: html
 editor: visual
 ---
 
-El objetivo es cuantificar y cartografiar la pedodiversidad de las Unidades Cartográficas de Suelo (UCS) de las regiones montañosas colombianas, explicándola por gradientes topográficos y climáticos, sin ignorar la dependencia espacial que confiere coherencia a los mosaicos edáficos. El flujo analítico se apoya en cuatro escalones sucesivos.
+El objetivo de este cuaderno es cuantificar y cartografiar la pedodiversidad de las Unidades Cartográficas de Suelo (UCS) de las regiones montañosas colombianas, explicándola a partir de gradientes topográficos y climáticos, sin ignorar la dependencia espacial que confiere coherencia a los mosaicos edáficos. El análisis se organiza en cuatro etapas integradas.
 
-Primero se reconstruye la base de datos espacial: cada UCS se enlaza con las covariables ambientales derivadas de DEM, LST y CHIRPS, y se le adjudica la era geológica predominante.
+Primero, se reconstruye la base de datos espacial: cada UCS se enlaza con las covariables ambientales derivadas de DEM, LST y CHIRPS, y se le adjudica la era geológica predominante según el Atlas Geológico Nacional.
 
-Segundo se diagnostica la autocorrelación de la respuesta antes de modelar. El Moran I global comprueba que la pedodiversidad no es aleatoria en el espacio (I ≈ 0,08; p \< 0,001); el LISA local identifica extensos clústeres Low-Low y corredores de transición High-Low / Low-High. Este paso justifica incluir un término espacial explícito.
+Segundo, se diagnostica la autocorrelación espacial de la variable respuesta log_Qdens antes de modelar. El índice de Moran I global indica dependencia espacial positiva (I ≈ 0.08, p \< 0.001), mientras que el análisis LISA local revela extensos clústeres Low-Low y corredores de transición High-Low / Low-High. Estos patrones justifican la inclusión de un término espacial explícito en el modelo.
 
-Tercero se ajusta un modelo jerárquico BYM2-CAR dentro del marco INLA. El predictor lineal combina: (i) efectos fijos β para la intensidad, variedad y variabilidad de los gradientes ambientales; (ii) un intercepto aleatorio iid por era geológica; y (iii) un campo espacial uᵢ que mezcla dependencia CAR entre vecinos y heterogeneidad local. Este modelo permite particionar la varianza residual en ruido, estructura espacial y posibles diferencias entre eras.
+Tercero, se ajusta un modelo jerárquico bayesiano en INLA que incorpora tres fuentes de variación residual: (i) un efecto espacial estructurado uᵢ siguiendo un modelo CAR sobre la matriz de vecindad Queen, (ii) un efecto no estructurado vᵢ modelado como ruido iid, y (iii) un intercepto aleatorio por era geológica. Esta separación permite descomponer explícitamente la dependencia espacial y la heterogeneidad entre grandes unidades cronoestratigráficas.
 
 Cuarto se examinan los cinco bloques de salida que genera INLA ‒ajuste global, efectos fijos, hiper-parámetros, efectos aleatorios y residuos‒ y se contrastan con los hallazgos exploratorios. A lo largo de esa revisión se añaden controles de calidad (sensibilidad a priors, correlogramas de residuos, R² marginal por grupos de covariables) para asegurar que las conclusiones no dependan de supuestos ocultos.
-
-Al finalizar, el cuaderno entrega: (1) mapas de predicción y de incertidumbre de la pedodiversidad, (2) la contribución numérica de cada gradiente ambiental, (3) la fracción de la varianza explicada por la estructura espacial, y (4) un diagnóstico reproducible de que la autocorrelación residual ha sido efectivamente absorbida.
-
-Con este andamiaje, el manuscrito puede sostener que la complejidad edáfica colombiana se modula principalmente por la topografía y el clima de fondo, mientras que las diferencias litológicas de gran escala (eras) juegan un papel marginal una vez controlados esos gradientes y la proximidad espacial.
-
-Una vez integrado este texto introductorio podemos pasar, sección por sección, a insertar los bloques complementarios que faltan (modelo de referencia sin término espacial, partición de R², test de autocorrelación de residuos, mapas de desviación estándar de uᵢ, etc.) y a pulir la redacción que acompaña cada bloque. Cuando me confirmes que la cabecera está lista, empezamos por el punto 1 de la lista pendiente y vamos avanzando de forma incremental.
 
 ```{r configuracion message = FALSE, warning = FALSE}
 
 #Para exportar como .R plano
-# knitr::purl('06_analisis_SAR_CAR__jerarquicos.qmd')
+# knitr::purl('06_analisis_dep_hetero_INLA.qmd')
 
 if (!"pacman" %in% rownames(installed.packages())) install.packages("pacman")
 pacman::p_load(
@@ -55,6 +49,7 @@ pacman::p_load(
   INLA,         # modelos Bayesianos rápidos (CAR/BYM/Leroux)
   lme4,         # modelos mixtos jerárquicos (GLMM)
   MuMIn,        # R² marginal/condicional para modelos mixtos
+  terra,        # Manejo de raster
   googledrive   # autenticación y manejo de archivos en Google Drive
 )
 
@@ -395,17 +390,6 @@ lw_queen <- spdep::nb2listw(
   zero.policy = TRUE             # si grado = 0, deja fila 0 · …  0
 )
 
-##  DIAGNÓSTICO DEL GRADO  -----------------------------------------------------
-grado_vec <- spdep::card(nb_queen)  # número de vecinos por polígono
-
-#  Polígonos sin vecinos (debería ser 0 si el shapefile es consistente)
-sin_vecinos <- which(grado_vec == 0)
-message("Polígonos sin vecinos: ", length(sin_vecinos))  # ≈ 0 cuando todo ok
-
-#  Polígonos “hiper-vecinos”  → p.ej. ríos / geoms. lineales
-p99   <- quantile(grado_vec, 0.99)  # umbral percentil 99
-hiper <- which(grado_vec > p99)
-message("Polígonos con grado > p99 (", round(p99), "): ", length(hiper))
 
 #───────────────────────────────────────────────────────────────────────────────
 ##  CONSECUENCIAS PARA MORAN/LISA  
@@ -414,6 +398,43 @@ message("Polígonos con grado > p99 (", round(p99), "): ", length(hiper))
 # • Cuando log_Qdens es NA (p.ej. polígonos-río sin datos) esos polígonos
 #   quedarán fuera del set keep_log y aparecerán como NA en mapas LISA.
 
+```
+
+```{r matriz_diagnostico}
+
+##  DIAGNÓSTICO DE LA MATRIZ  -----------------------------------------------------
+grado_vec <- spdep::card(nb_queen)  # número de vecinos por polígono
+
+# 1. Polígonos sin vecinos (grado = 0)
+sin_vecinos <- which(grado_vec == 0)
+n_islas     <- length(sin_vecinos)
+message("Polígonos sin vecinos: ", n_islas)  # ≈ 0 cuando todo ok
+
+# 2. Polígonos “hiper-vecinos” → p.ej. ríos / geoms. lineales
+p99   <- quantile(grado_vec, 0.99)
+hiper <- which(grado_vec > p99)
+message("Polígonos con grado > p99 (", round(p99), "): ", length(hiper))
+
+# 3. UCS válidas (con ≥ 1 vecino)
+n_total   <- length(grado_vec)
+n_validas <- sum(grado_vec > 0)
+message("UCS válidas (con ≥1 vecino): ", n_validas)
+
+# 4. Estadísticos resumen del grado (solo UCS válidas)
+grado_validos <- grado_vec[grado_vec > 0]
+
+resumen_grado <- tibble::tibble(
+  Min     = min(grado_validos),
+  Q1      = quantile(grado_validos, 0.25),
+  Mediana = median(grado_validos),
+  Media   = mean(grado_validos),
+  Q3      = quantile(grado_validos, 0.75),
+  Máx     = max(grado_validos),
+  CV      = sd(grado_validos) / mean(grado_validos)
+) |>
+  dplyr::mutate(dplyr::across(everything(), ~round(.x, 2)))
+
+print(resumen_grado)
 ```
 
 El histograma a continuación muestra la distribución del número de vecinos por polígono. Un patrón razonable es una moda baja (2-6 vecinos) y una cola poco poblada. Barras aisladas muy a la derecha suelen delatar unidades lineales (ríos, carreteras) o multipolígonos mal formados que tocan a cientos de UCS y pueden inflar el peso de unos pocos registros en Moran I.
@@ -467,6 +488,56 @@ ggsave(
   plot   = p_map_queen_degree,
   width  = 8, height = 8, dpi = 350
 )
+```
+
+```{r}
+
+# ────────────────────────────────────────────────────────────────
+#   Mosaico: Mapa del grado (arriba) + Histograma (abajo)
+#   Relación vertical 3:1, etiquetas en español
+# ────────────────────────────────────────────────────────────────
+
+library(patchwork)  # para combinar gráficos
+
+# Actualiza etiquetas del histograma
+gg_hist_degree_es <- ggplot(
+  data.frame(grado = grado_vec) |> dplyr::filter(grado <= 30),
+  aes(x = grado)
+) +
+  geom_histogram(
+    binwidth = 1,
+    fill     = pal_qualitat[1],
+    colour   = "white",
+    boundary = 0, closed = "left"
+  ) +
+  labs(
+    x = "Número de vecinos (grado Queen)",
+    y = "Número de polígonos"
+  ) +
+  theme_minimal()
+
+# Actualiza etiquetas del mapa
+modelo_sf_s$grado <- grado_vec
+p_map_queen_degree_es <- ggplot(modelo_sf_s |> dplyr::filter(grado <= 200)) +
+  geom_sf(aes(fill = grado), colour = NA) +
+  scale_fill_gradientn(colours = pal_continuo, name = "Vecinos") +
+  labs(title = "Grado de vecindad Queen por polígono") +
+  theme_minimal(base_size = 14)
+
+# Ensambla mosaico: mapa arriba (3/4), histograma abajo (1/4)
+mosaico_grado <- p_map_queen_degree_es / gg_hist_degree_es + plot_layout(heights = c(3, 1))
+
+# Exporta imagen
+ggsave(
+  here::here("Figures", "mosaico_mapa_histograma_grado.png"),
+  plot   = mosaico_grado,
+  width  = 8,
+  height = 10,
+  dpi    = 350
+)
+
+# Muestra en pantalla
+mosaico_grado
 ```
 
 ### 3.2 Analisis de autocorrelación Moran I y LISA
@@ -638,14 +709,14 @@ p_scatter <- ggplot(scatter_df,
               colour = "black", linewidth = .4) +
   geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
   geom_vline(xintercept = 0, linetype = "dashed", colour = "grey60") +
-  scale_colour_manual(values = col_lisa, name = "LISA cluster", drop = FALSE) +
+  scale_colour_manual(values = col_lisa, name = "Clúster LISA", drop = FALSE) +
   annotate("text", x = -Inf, y =  Inf, hjust = -0.04, vjust = 1.1,
            label = txt_I, size = 3.3, fontface = "italic") +
   guides(colour = guide_legend(override.aes = list(size = 3))) +
   labs(
-    x = "Standardised log10(Q / area)",
-    y = "Spatial lag (W · z)",
-    title = "Local Moran scatterplot"
+    x = "log₁₀(Q / área) estandarizado",
+    y = "Lag espacial (W · z)",
+    title = "Diagrama de dispersión de Moran local"
   ) +
   theme_minimal(base_size = 11) +
   theme(legend.position = "right")
@@ -653,18 +724,18 @@ p_scatter <- ggplot(scatter_df,
 # 5 ▸ (b) Mapa de clústeres ---------------------------------------------------
 p_clusters <- ggplot(plot_df) +
   geom_sf(aes(fill = cluster_raw), colour = NA) +
-  scale_fill_manual(values = col_lisa, name = "LISA cluster",
+  scale_fill_manual(values = col_lisa, name = "Clúster LISA",
                     drop = FALSE, na.translate = FALSE) +
-  labs(title = "LISA cluster map") +
+  labs(title = "Mapa de clústeres LISA") +
   theme_minimal(base_size = 11)
 
 # 6 ▸ (c) Mapa de Ii ----------------------------------------------------------
 p_ii <- ggplot(plot_df) +
   geom_sf(aes(fill = Ii_raw), colour = NA) +
-  scale_fill_viridis_c(name = "Local Ii",
+  scale_fill_viridis_c(name = "Ii local",
                        option = "magma", direction = -1,
                        na.value = "white") +
-  labs(title = "Local Ii values") +
+  labs(title = "Valores locales de Ii") +
   theme_minimal(base_size = 11)
 
 # 7 ▸ Tripanel y exportación --------------------------------------------------
@@ -678,6 +749,7 @@ ggsave(
 )
 
 p_lisa_tripanel   # se muestra en el cuaderno
+
 
 
 
@@ -707,14 +779,13 @@ Un intercepto aleatorio por era geológica, que permite capturar desplazamientos
 
 Esta especificación separa de forma explícita las fuentes estructuradas y no estructuradas de variación espacial. El predictor lineal del modelo queda definido como:
 
-
-ηᵢ = β₀ + Σ βₖ Xᵢₖ + b_{era(i)} + uᵢ + vᵢ
+ηᵢ = β₀ + Σ βₖ Xᵢₖ + b\_{era(i)} + uᵢ + vᵢ
 
 Donde:
 
 βₖ: coeficientes fijos de las covariables continuas estandarizadas.
 
-b_{era(i)}: desviación del intercepto para la era geológica del polígono i, con distribución N(0, σ²_era), independiente entre niveles.
+b\_{era(i)}: desviación del intercepto para la era geológica del polígono i, con distribución N(0, σ²_era), independiente entre niveles.
 
 uᵢ: efecto estructurado espacial, siguiendo un modelo CAR condicionado a la matriz de adyacencia Queen.
 
@@ -786,7 +857,8 @@ fit_besag_sep <- INLA::inla(
   data    = as.data.frame(modelo_sf)[keep_log, ],
   family  = "gaussian",
   control.predictor = list(compute = TRUE),
-  control.compute   = list(dic = TRUE, waic = TRUE)
+  control.compute   = list(dic = TRUE, waic = TRUE, config = TRUE)
+
 )
 
 ## ── 7 · Resumen general del ajuste ─────────────────────────────────────────
@@ -859,8 +931,7 @@ También evaluamos visualmente cómo se comportan los efectos fijos (`β`) entre
 
 #### 4.3.1 Métricas globales
 
-A diferencia del DIC (Deviance Information Criterion) o del WAIC (Watanabe-Akaike Information Criterion), que tienen umbrales de interpretación más establecidos —como el ΔDIC > 10 sugerido por Spiegelhalter et al. (2002) como "evidencia sustancial"—, el uso del logaritmo marginal de la verosimilitud (logML) para comparar modelos no tiene un único umbral universalmente aceptado. logML = log Marginal Likelihood, también conocido como log evidencia del modelo. Es la probabilidad de los datos bajo el modelo, integrando sobre todos los parámetros. Se usa para comparar modelos a través del Bayes Factor
-
+A diferencia del DIC (Deviance Information Criterion) o del WAIC (Watanabe-Akaike Information Criterion), que tienen umbrales de interpretación más establecidos —como el ΔDIC \> 10 sugerido por Spiegelhalter et al. (2002) como "evidencia sustancial"—, el uso del logaritmo marginal de la verosimilitud (logML) para comparar modelos no tiene un único umbral universalmente aceptado. logML = log Marginal Likelihood, también conocido como log evidencia del modelo. Es la probabilidad de los datos bajo el modelo, integrando sobre todos los parámetros. Se usa para comparar modelos a través del Bayes Factor
 
 ```{r label_res_metricas}
 
@@ -933,10 +1004,7 @@ p_metricas
 
 ```
 
-
-Interpretación comparativa entre modelos
-* Comparación entre modelos espaciales (con vs. sin era)
-El modelo espacial completo —que incluye tanto la estructura espacial (campo besag + iid) como el efecto aleatorio por era geológica (iid)— presenta mejores métricas de ajuste que su versión sin el término de era:
+Interpretación comparativa entre modelos \* Comparación entre modelos espaciales (con vs. sin era) El modelo espacial completo —que incluye tanto la estructura espacial (campo besag + iid) como el efecto aleatorio por era geológica (iid)— presenta mejores métricas de ajuste que su versión sin el término de era:
 
 ΔDIC = 788
 
@@ -948,8 +1016,7 @@ Estas diferencias, aunque no masivas, son consistentes y favorecen el modelo con
 
 Conclusión provisional: La información geológica agrega valor explicativo al modelo, especialmente en términos de ajuste (DIC y WAIC), aunque buena parte de la heterogeneidad entre eras sigue siendo absorbida por el campo espacial.
 
-* Comparación con el modelo sin estructura espacial
-El modelo no espacial (que sólo incorpora los efectos fijos y el término f(era_geo)) exhibe un ajuste notablemente peor:
+-   Comparación con el modelo sin estructura espacial El modelo no espacial (que sólo incorpora los efectos fijos y el término f(era_geo)) exhibe un ajuste notablemente peor:
 
 DIC y WAIC son superiores en más de 16.000 puntos
 
@@ -999,7 +1066,6 @@ betas_comparados <- dplyr::bind_rows(
 
 ```
 
-
 ```{r label = viz_coefs}
 
 ## ── Forest plot comparativo de efectos fijos con ajustes visuales ─────────
@@ -1044,7 +1110,7 @@ p_forest_coefs <- ggplot(betas_comparados, aes(
   geom_point(position = position_dodge(width = 0.7), size = 2) +
   geom_errorbar(position = position_dodge(width = 0.7), width = 0.25) +
   labs(
-    title = "Coeficientes por modelo (media e IC 95 %)",
+    title = "Coeficientes por modelo (media e IC 95%)",
     x = "Media posterior E[β | datos]",
     y = NULL
   ) +
@@ -1068,9 +1134,9 @@ p_forest_coefs
 
 ```
 
-Se comparan los coeficientes estimados βₖ entre los tres modelos ajustados: el modelo espacial completo (Besag + iid + efecto por era), el modelo espacial sin efecto por era, y el modelo no espacial. Se resumen sus medias posteriores e intervalos de credibilidad al 95 % en formato tabular, y se visualizan las distribuciones posteriores bajo el modelo completo para explorar la forma y simetría de cada parámetro. Esto permite contrastar cuantitativamente la importancia de cada covariable y evaluar la robustez de las inferencias.
+Se comparan los coeficientes estimados βₖ entre los tres modelos ajustados: el modelo espacial completo (Besag + iid + efecto por era), el modelo espacial sin efecto por era, y el modelo no espacial. Se resumen sus medias posteriores e intervalos de credibilidad al 95% en formato tabular, y se visualizan las distribuciones posteriores bajo el modelo completo para explorar la forma y simetría de cada parámetro. Esto permite contrastar cuantitativamente la importancia de cada covariable y evaluar la robustez de las inferencias.
 
-```{r}
+```{r tabla_coeficientes}
 
 ## ── Tabla comparativa simplificada de coeficientes βₖ ──────────────────────
 
@@ -1103,22 +1169,34 @@ print(tabla_betas_simple, n = Inf)
 
 ```
 
-
 La siguiente figura muestra las distribuciones marginales posteriores de los coeficientes bajo el modelo espacial completo. Permite evaluar si las distribuciones son simétricas, desplazadas respecto a cero o tienen colas pesadas, lo cual complementa la interpretación del forest plot.
 
-```{r}
+```{r beta_densidades}
 
 ## ── Visualización de densidades posteriores de coeficientes βₖ ─────────────
+
+# Renombrar covariables para que sean más interpretables
+nombres_covariables <- c(
+  "(Intercept)"                 = "Intercepto",
+  "dem_media_z"                = "Elevación media (z)",
+  "pendiente_media_z"          = "Pendiente media (z)",
+  "lst_media_z"                = "Temperatura media (z)",
+  "precip_media_z"             = "Precipitación media (z)",
+  "log_dem_cv_z"               = "CV elevación (log, z)",
+  "log_pendiente_cv_z"         = "CV pendiente (log, z)",
+  "log_lst_cv_temporal_z"      = "CV temperatura (log, z)",
+  "log_precip_cv_temporal_z"   = "CV precipitación (log, z)"
+)
 
 # Extraer distribuciones marginales de los coeficientes fijos del modelo completo
 marginales_beta <- fit_besag_sep$marginals.fixed
 
-# Convertir cada distribución marginal en tibble etiquetado
+# Convertir cada distribución marginal en tibble etiquetado y renombrado
 densidades_beta <- purrr::imap_dfr(marginales_beta, ~{
   as.data.frame(.x) |>
     tibble::as_tibble() |>
     dplyr::rename(beta = x, densidad = y) |>
-    dplyr::mutate(covariable = .y)
+    dplyr::mutate(covariable = nombres_covariables[.y])
 })
 
 # Gráfico con líneas por densidad marginal
@@ -1137,7 +1215,7 @@ p_prob <- ggplot(densidades_beta, aes(x = beta, y = densidad)) +
 ggsave(
   filename = here::here("Figures", "distribuciones_coeficientes.png"),
   plot     = p_prob,
-  width    = 6,
+  width    = 6.6,
   height   = 6,
   dpi      = 350
 )
@@ -1166,7 +1244,7 @@ Respecto a la heterogeneidad interna:
 
 Variabilidad relativa del relieve (log_cv_dem) tiene un impacto negativo fuerte (β ≈ –1.19), posiblemente indicando que un terreno extremadamente quebrado restringe la formación simultánea de múltiples tipos de suelos.
 
-En contraste, la variabilidad relativa de la pendiente (log_cv_pendiente) es positiva (β ≈ +0.39), indicando que alternancias de inclinaciones suaves y abruptas favorecen la diversidad edáfica.
+En contraste, la variabilidad relativa de la pendiente (log_cv_pendiente) es positiva (β ≈+0.39), indicando que alternancias de inclinaciones suaves y abruptas favorecen la diversidad edáfica.
 
 Las proxies de variabilidad climática interanual muestran efectos pequeños:
 
@@ -1182,104 +1260,19 @@ Algunos coeficientes climáticos (como precipitación media y las CVs) aparecen 
 
 La inclusión del efecto aleatorio por era geológica tiene un impacto menor sobre los coeficientes puntuales, pero aumenta ligeramente los intervalos de credibilidad, al redistribuir la incertidumbre entre componentes jerárquicos.
 
-### 4.4 Hiperparámetros del modelo espacial: magnitud e interpretación
-
-Además de los coeficientes β, el modelo espacial completo con componentes separadas (besag + iid + era) estima una serie de hiperparámetros que controlan la varianza residual y la estructura de dependencia espacial. A diferencia de los efectos fijos, estos parámetros no se interpretan como efectos directos de variables ambientales, sino como propiedades del proceso latente que estructura los residuos del modelo una vez ajustados los efectos observables.
-
-En este modelo, los hiperparámetros clave son:
-
-Varianza estructurada espacial (σ²_u): asociada al campo CAR definido por la vecindad espacial.
-
-Varianza no estructurada (σ²_v): representa heterogeneidad local no explicada por la estructura vecinal.
-
-Varianza del intercepto aleatorio por era (σ²_era): cuantifica la magnitud de los desplazamientos sistemáticos entre eras geológicas.
-
-Este análisis permite responder si la autocorrelación espacial es relevante después de ajustar por covariables, y si las diferencias geológicas aportan señal útil. A continuación se visualizan y cuantifican estos hiperparámetros usando la media posterior como estadístico resumen.
-
-```{r}
-
-## ── Extracción de hiperparámetros del modelo espacial completo ─────────────
-
-# Extraer de fit_besag_sep
-hpars <- fit_besag_sep$summary.hyperpar
-
-# Convertir a tabla ordenada
-hiper_besag <- tibble::tibble(
-  parametro = c("Varianza estructurada (CAR)", "Varianza no estructurada (iid)", "Varianza por era geológica"),
-  valor = c(
-    1 / hpars[grepl("Precision for id_poly_u", rownames(hpars)), "mean"],
-    1 / hpars[grepl("Precision for id_poly_v", rownames(hpars)), "mean"],
-    1 / hpars[grepl("Precision for era_geo", rownames(hpars)), "mean"]
-  )
-)
-
-# Redondear valores
-hiper_besag <- hiper_besag |>
-  dplyr::mutate(valor = round(valor, 4))
-
-hiper_besag
-
-
-```
-
-Se visualizan
-
-```{r}
-
-
-## ── Visualización de varianzas aleatorias ─────────────────────────────────
-
-ggplot(hiper_besag, aes(x = parametro, y = valor, fill = parametro)) +
-  geom_col(width = 0.6, show.legend = FALSE) +
-  geom_text(aes(label = valor), vjust = -0.5, size = 4) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
-  scale_fill_manual(values = c(
-    "Varianza estructurada (CAR)" = "#3A9AB2FF",
-    "Varianza no estructurada (iid)" = "#E3B710FF",
-    "Varianza por era geológica" = "#EF5703FF"
-  )) +
-  labs(
-    title = "Hiperparámetros del modelo espacial completo (besag + iid + era)",
-    subtitle = "Varianzas estimadas para los efectos aleatorios",
-    x = NULL,
-    y = "Media posterior de la varianza"
-  ) +
-  theme_minimal(base_size = 13)
-
-
-
-  
-```
-
-El modelo espacial completo estima una varianza total residual de aproximadamente 0.988, correspondiente a la suma de tres componentes: una varianza estructurada (CAR) de 0.678, una varianza no estructurada (iid) de 0.310, y una varianza jerárquica por era geológica de 0. Estas cantidades representan la variación no explicada por las covariables ambientales, que ha sido absorbida por el campo espacial y el efecto aleatorio.
-
-Desde esta perspectiva, el 68.6% de la varianza residual se organiza espacialmente según la estructura definida por la vecindad (modelo CAR), mientras que el 31.4% corresponde a ruido local no estructurado, y 0% a diferencias sistemáticas entre eras geológicas. Esto confirma que la mayor parte del patrón residual sigue una estructura espacial continua, no aleatoria.
-
-Aunque en este modelo no se estimó directamente el parámetro de mezcla φ (propio del esquema BYM2), los valores de varianza permiten inferir su equivalente empírico como:
-
-$$
-\phi^* = \frac{\text{Var(CAR)}}{\text{Var(CAR)} + \text{Var(iid)}} = \frac{0.678}{0.678 + 0.310} \approx 0.686
-$$
-
-Este resultado respalda cuantitativamente que la dependencia espacial estructurada domina el patrón de pedodiversidad residual, y que el modelo captura adecuadamente esa continuidad a través de la topología de vecindad.
-
-La ausencia de varianza atribuida a la era geológica implica que, una vez incorporadas las covariables ambientales y los efectos espaciales, no persisten diferencias sistemáticas entre eras que justifiquen un nivel jerárquico adicional. Esto no invalida su inclusión inicial en el modelo, pues permite verificar empíricamente su necesidad.
-
-En conjunto, los hiperparámetros del modelo indican que el componente espacial estructurado (CAR) es el principal responsable de la autocorrelación remanente, mientras que el ruido local (iid) cumple un rol secundario. La geología, en cambio, no introduce heterogeneidad adicional una vez controlados los demás factores. Esto sugiere que la estructura espacial es una propiedad latente clave de la pedodiversidad, y que el contexto geológico actúa más como modulador indirecto a través del ambiente que como un efecto directo sobre la respuesta modelada.
-
-### 4.5 Efectos aleatorios – Intercepto por era geológica
+### 4.4 Efectos aleatorios – Intercepto por era geológica
 
 El modelo jerárquico incluye un intercepto aleatorio para cada era geológica mediante el término f(era_geo, model = "iid"). Este término asigna a cada categoría un efecto aleatorio independiente, modelado como una realización de una distribución normal centrada en cero:
 
-b_era(i) ~ N(0, σ²_era)
+b_era(i) \~ N(0, σ²_era)
 
 Esto significa que el modelo permite que cada era tenga su propio nivel base de pedodiversidad, una vez descontados los efectos fijos y el campo espacial. No se trata de pendientes aleatorias, ya que las covariables ambientales (elevación, clima, etc.) no interactúan con la era.
 
 Tampoco debe confundirse este término con el ruido espacial no estructurado incluido en el campo f(id_poly_u, model = "besag") + f(id_poly_v, model = "iid"), que representa dependencia entre vecinos (estructura CAR) y heterogeneidad local. El efecto por era representa una fuente adicional de variación, jerárquica, categórica y no espacial. Su función es capturar desplazamientos sistemáticos entre eras geológicas, si los hubiera, no explicar error.
 
-A continuación se extraen y visualizan los valores medios estimados de $b_{\text{era}(i)}$, junto con sus intervalos creíbles del 95 %, para evaluar si alguna era se desvía sistemáticamente del nivel base.
+A continuación se extraen y visualizan los valores medios estimados de $b_{\text{era}(i)}$, junto con sus intervalos creíbles del 95%, para evaluar si alguna era se desvía sistemáticamente del nivel base.
 
-```{r}
+```{r efectos_era}
 
 ## ── Efectos aleatorios por era geológica ───────────────────────────────────
 
@@ -1313,15 +1306,329 @@ Los interceptos aleatorios estimados para cada era geológica son prácticamente
 
 En otras palabras, ninguna era muestra un desplazamiento sistemático de la pedodiversidad, una vez controlada la combinación de covariables topográficas, climáticas y de variabilidad. La dispersión restante entre polígonos ya se explica por la componente espacial CAR y por el ruido iid; el nivel “era” añade información despreciable. Esto respalda la conclusión extraída del hiper-parámetro de precisión: el término aleatorio por era puede omitirse en modelos simplificados sin sacrificar ajuste ni interpretación.
 
-### 4.6 Campo espacial estructurado (uᵢ)
+### 4.5 Descomposición de la varianza y R² marginal
+
+Con el objetivo de cuantificar la fracción de la variabilidad de la pedodiversidad explicada únicamente por las covariables ambientales observadas, se estimó el **R² marginal** del modelo jerárquico espacial mediante dos métodos complementarios. Ambos se fundamentan en la descomposición de la varianza propuesta por **Nakagawa y Schielzeth (2013)** para modelos mixtos, y adaptada al enfoque bayesiano por  y **Blangiardo y Cameletti (2015)**.
+
+Para cuantificar la fracción de la variabilidad de la pedodiversidad explicada exclusivamente por las covariables ambientales observadas, se procedió a estimar el R² marginal del modelo jerárquico espacial. Esta estimación se realizó a través de dos métodos complementarios [conversación previa], ambos fundamentados en el marco de la descomposición de la varianza **(Gelman et al. 2019)**. Esta descomposición fue propuesta originalmente por **Nakagawa y Schielzeth (2013)** para modelos mixtos, distinguiendo claramente entre la varianza atribuible a los efectos fijos y la varianza total.
+
+La adaptación de este concepto al contexto bayesiano se realiza siguiendo las directrices de Gelman et al. (2019), quienes proponen una R² basada en la varianza explicada y la varianza residual obtenidas directamente de las distribuciones predictivas del modelo. Además, se incorporan las consideraciones metodológicas para la estimación de varianzas a partir de los parámetros de precisión en el entorno de INLA (Integrated Nested Laplace Approximation), un enfoque de inferencia bayesiana aproximada particularmente eficiente para modelos Gaussianos latentes [Rue et al. (2009), 435], tal como lo detallan Blangiardo y Cameletti (2015) y Gómez-Rubio (2021) [Blangiardo y Cameletti (2015), 1, 73; Gómez-Rubio (2021), 135].
+
+**Método 1 – Ley de la varianza total aplicada al predictor lineal**
+
+Este enfoque estima la varianza explicada por el predictor lineal completo ηᵢ a partir de su distribución marginal posterior [Gómez-Rubio (2021), 102]. Se calcula: `σ²_η = Var( E[ηᵢ] ) + E[ Var(ηᵢ) ]` [Gelman et al. (2019), 351, 354] donde:
+
+• `Var( E[ηᵢ]` ) es la varianza empírica de las medias posteriores del predictor,
+• `E[ Var(ηᵢ) ]` es el promedio de las varianzas marginales de cada ηᵢ. 
+
+Ambos términos se extraen de `summary.linear.predictor`, una salida estándar de INLA que proporciona las medias (mean) y desviaciones estándar (sd) posteriores para cada ηᵢ. El predictor lineal (ηᵢ) en INLA combina los efectos fijos, aleatorios y residuales. Aunque esta medida no aísla la contribución exclusiva de las covariables, sí representa la capacidad predictiva total del modelo, tal como lo proponen Gelman et al. (2019).
+
+La varianza total del modelo se obtiene como: `σ²_total = σ²_η + σ²ᵤ + σ²ᵥ + σ²ₑᵣₐ + σ²ₑ` Esta descomposición de la varianza total es una práctica común en el análisis de modelos mixtos [Nakagawa y Schielzeth (2013), 445]. Cada componente (efecto aleatorio u, v, era y error ε) se estima a partir de las medias posteriores de las precisiones (τ) [Blangiardo y Cameletti (2015), 1] como `σ² = 1 / E[τ]` 
+
+Este enfoque es común en aplicaciones con INLA [Blangiardo y Cameletti (2015), 1; Gómez-Rubio (2021)] y los resúmenes de hiperparámetros de INLA proporcionan las medias posteriores de estas precisiones. Sin embargo, al usar la transformación directa `1/mean(τ)`, puede subestimar la varianza verdadera si las distribuciones posteriores de las precisiones son asimétricas [Rue et al. (2009), 460]. Para una estimación más precisa de la media posterior de la varianza, se recomienda calcular la esperanza de la inversa de la precisión, `E[1/τ]`, utilizando funciones como inla.emarginal [Blangiardo y Cameletti (2015)].
+
+Finalmente, el R² marginal se calcula como: R²₁ = σ²_η / σ²_total Este valor suele ser más alto porque incluye la variabilidad explicada por la estructura aleatoria del modelo además de los efectos fijos, lo que lo alinea conceptualmente con una R² condicional en los modelos lineales generalizados mixtos [Nakagawa y Schielzeth (2013), 445].
+
+---
+
+**Método 2 – Varianza del predictor fijo η_fijos = Xβ̂**
+
+Este enfoque calcula exclusivamente la varianza explicada por las covariables observadas (efectos fijos), excluyendo toda contribución aleatoria. Se construye el predictor lineal fijo como:
+
+`η_fijos = Xβ̂`` 
+
+donde X es la matriz de diseño de los efectos fijos y β̂ son las medias posteriores de los coeficientes de los efectos fijos, obtenidas de summary.fixed en INLA. La varianza de este predictor fijo se estima como:
+
+`σ²_Xβ = Var(η_fijos)`
+
+Este método representa de manera estricta la varianza atribuible a los efectos lineales de las covariables [Nakagawa y Schielzeth (2013), 417, 420]. Nakagawa y Schielzeth (2013) lo proponen como r2f (varianza calculada a partir de los componentes de efectos fijos) para la R² marginal en modelos lineales generalizados mixtos (GLMMs) [Nakagawa y Schielzeth (2013), 420]. Aunque Gelman et al. (2019) utilizan el término `varfit` para la varianza de las medias predictivas modeladas, esta aplicación se restringe aquí explícitamente a la contribución de los efectos fijos para alinearse con la definición de R² marginal de Nakagawa y Schielzeth (2013) [Gelman et al. (2019), 327, 328; Nakagawa y Schielzeth (2013), 420].
+
+Las varianzas de los efectos aleatorios (u, v, era) y del error (ε) se estiman ahora usando la esperanza de la transformación inversa de la distribución posterior de la precisión (τ) [Blangiardo y Cameletti (2015), 1, 73]:
+
+σ² = E[1 / τ]
+
+Este procedimiento, implementado con inla.emarginal(function(x) 1/x, marginal), captura mejor la incertidumbre de la distribución de τ al calcular la media de la varianza en lugar de la inversa de la media de la precisión [Blangiardo y Cameletti (2015), 73; Gómez-Rubio (2021), 135, 137]. Esto es particularmente importante si las distribuciones posteriores de las precisiones son asimétricas, lo que podría llevar a una subestimación de la varianza verdadera si se usa la transformación directa 1/mean(τ) [Rue et al. (2009), 46].
+
+La varianza total del modelo se define como la suma de las varianzas de los efectos fijos, los efectos aleatorios y el error residual [Nakagawa y Schielzeth (2013), 424]:
+
+`σ²_total = σ²_Xβ + σ²ᵤ + σ²ᵥ + σ²ₑᵣₐ + σ²ₑ`
+
+Finalmente, el R² marginal se calcula como:
+
+`R²₂ = σ²_Xβ / σ²_total`
+
+Este enfoque es más conservador, ya que el numerador solo incluye la varianza explicada por los predictores observables (efectos fijos), sin influencia directa de la variabilidad inducida por la estructura espacial o jerárquica de los efectos aleatorios [Nakagawa y Schielzeth (2013), 424, 425].
+---
+
+#### ▪ Diferencias clave entre ambos métodos
+
+Aunque ambos enfoques comparten la misma fórmula general de R² marginal, difieren en dos aspectos fundamentales:
+
+1. **Estimación de la varianza explicada**:
+   - Método 1 incluye tanto efectos fijos como aleatorios en el predictor lineal (ηᵢ), reflejando la varianza explicada por todo el modelo.
+   - Método 2 aísla los efectos fijos (Xβ̂), ofreciendo una estimación más estricta.
+
+2. **Estimación de las varianzas de los efectos aleatorios y del error**:
+   - Método 1 usa **1 / E[τ]** (inverso de la media posterior de la precisión).
+   - Método 2 usa **E[1 / τ]** (media de la inversa de τ, calculada con `inla.emarginal`), que es más precisa cuando la distribución de τ es asimétrica.
+
+Estas diferencias explican por qué los valores de **σ²_era** y **σ²ₑ** no coinciden exactamente entre ambos métodos, a pesar de que conceptualmente representan los mismos componentes. El método 2, al integrar la variabilidad posterior de τ, suele arrojar valores ligeramente mayores para estas varianzas.
+
+
+
+```{r varianzas_metodo_A}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. Hiperparámetros del modelo: extracción y conversión a varianzas (σ² = 1 / τ)
+# ─────────────────────────────────────────────────────────────────────────────
+
+hpars <- fit_besag_sep$summary.hyperpar
+
+hiper_besag <- tibble::tibble(
+  parametro = c("Varianza estructurada (CAR)", 
+                "Varianza no estructurada (iid)", 
+                "Varianza por era geológica"),
+  valor = c(
+    1 / hpars[grepl("Precision for id_poly_u", rownames(hpars)), "mean"],
+    1 / hpars[grepl("Precision for id_poly_v", rownames(hpars)), "mean"],
+    1 / hpars[grepl("Precision for era_geo",     rownames(hpars)), "mean"]
+  )
+)
+
+hiper_besag <- hiper_besag |> 
+  mutate(valor = round(valor, 4))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Varianza explicada por efectos fijos (predictor lineal η)
+#     var_eta = var( E[ηᵢ] ) + mean( Var[ηᵢ] )
+# ─────────────────────────────────────────────────────────────────────────────
+
+var_mean_eta <- var(fit_besag_sep$summary.linear.predictor$mean)
+mean_var_eta <- mean(fit_besag_sep$summary.linear.predictor$sd^2)
+var_eta <- var_mean_eta + mean_var_eta
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Varianzas de efectos aleatorios (extraídas de 'hiper_besag')
+# ─────────────────────────────────────────────────────────────────────────────
+
+var_u   <- hiper_besag |> filter(parametro == "Varianza estructurada (CAR)") |> pull(valor)
+var_v   <- hiper_besag |> filter(parametro == "Varianza no estructurada (iid)") |> pull(valor)
+var_era <- hiper_besag |> filter(parametro == "Varianza por era geológica")    |> pull(valor)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Varianza del error observacional (σ²_e = 1 / τ_e)
+# ─────────────────────────────────────────────────────────────────────────────
+
+var_error <- fit_besag_sep$summary.hyperpar |>
+  as.data.frame() |>
+  tibble::rownames_to_column("param") |>
+  filter(str_detect(param, "Precision for the Gaussian observations")) |>
+  pull(mean) |> 
+  {\(x) 1 / x}()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Cálculo de varianza total y R² marginal
+# ─────────────────────────────────────────────────────────────────────────────
+
+var_total_obs <- var_eta + var_u + var_v + var_era + var_error
+R2_marginal <- var_eta / var_total_obs
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Tabla resumen de varianzas (valores absolutos y porcentajes)
+# ─────────────────────────────────────────────────────────────────────────────
+
+varianzas <- c(var_eta, var_u, var_v, var_era, var_error)
+componentes <- c("Efectos fijos (covariables)", 
+                 "Estructurado (CAR)", 
+                 "No estructurado (iid)", 
+                 "Era geológica",
+                 "Error observacional")
+
+tabla_varianzas_1 <- tibble::tibble(
+  Componente = componentes,
+  Varianza   = round(varianzas, 4),
+  Porcentaje = round(100 * varianzas / var_total_obs, 1)
+)
+
+tabla_varianzas_1
+
+
+```
+
+
+
+```{r varianzas_metodo_B}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Varianza explicada por efectos fijos (predictor lineal η_fijos)
+#    Usando la matriz de diseño y los betas del modelo ajustado
+# ─────────────────────────────────────────────────────────────────────────────
+
+# (a) Extraer coeficientes fijos (medias posteriores)
+betas <- fit_besag_sep$summary.fixed$mean
+names(betas) <- rownames(fit_besag_sep$summary.fixed)  # Asegurar nombres correctos
+
+# (b) Construir matriz de diseño con las covariables estandarizadas usadas en el modelo
+X <- model.matrix(~ dem_media_z + pendiente_media_z + lst_media_z + precip_media_z +
+                    log_dem_cv_z + log_pendiente_cv_z + log_lst_cv_temporal_z +
+                    log_precip_cv_temporal_z,
+                  data = modelo_sf[keep_log, ])
+
+# (c) Alinear matriz de diseño con los coeficientes fijos (incluye el intercepto)
+#     Se asegura que X y betas estén ordenados y con nombres consistentes
+nombres_X <- colnames(X)
+nombres_X[nombres_X == "Intercept"] <- "(Intercept)"  # corrección si aplica
+X <- X[, nombres_X, drop = FALSE]                      # orden estricto
+betas_reordenados <- betas[nombres_X]
+
+# Validación de alineación
+if (anyNA(betas_reordenados)) {
+  stop("Algunos nombres de coeficientes no coinciden entre betas y X")
+}
+
+# (d) Calcular predictor lineal con solo efectos fijos
+eta_fijos <- as.vector(X %*% betas_reordenados)
+
+# (e) Calcular varianza de efectos fijos
+var_eta <- var(eta_fijos)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Obtener varianzas marginales posteriores de los efectos aleatorios
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Efecto espacial estructurado (CAR)
+var_u <- INLA::inla.emarginal(
+  function(x) 1 / x,
+  fit_besag_sep$marginals.hyperpar$`Precision for id_poly_u`
+)
+
+# Efecto espacial no estructurado (iid)
+var_v <- INLA::inla.emarginal(
+  function(x) 1 / x,
+  fit_besag_sep$marginals.hyperpar$`Precision for id_poly_v`
+)
+
+# Efecto aleatorio por era geológica
+var_era <- INLA::inla.emarginal(
+  function(x) 1 / x,
+  fit_besag_sep$marginals.hyperpar$`Precision for era_geo`
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Varianza residual (error observacional)
+# ─────────────────────────────────────────────────────────────────────────────
+
+var_error <- INLA::inla.emarginal(
+  function(x) 1 / x,
+  fit_besag_sep$marginals.hyperpar$`Precision for the Gaussian observations`
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Varianza total observada
+# ─────────────────────────────────────────────────────────────────────────────
+
+var_total_obs <- var_eta + var_u + var_v + var_era + var_error
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. R² marginal (Nakagawa & Schielzeth 2013)
+# ─────────────────────────────────────────────────────────────────────────────
+
+R2_marginal <- var_eta / var_total_obs
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Tabla resumen de componentes de varianza
+# ─────────────────────────────────────────────────────────────────────────────
+
+varianzas <- c(var_eta, var_u, var_v, var_era, var_error)
+componentes <- c(
+  "Covariables (efectos fijos)", 
+  "Espacial estructurado (CAR)", 
+  "Espacial no estructurado (iid)", 
+  "Era geológica", 
+  "Error residual"
+)
+
+tabla_varianzas_2 <- tibble::tibble(
+  Componente = componentes,
+  Varianza   = round(varianzas, 4),
+  Porcentaje = round(100 * varianzas / var_total_obs, 1)
+)
+
+# Mostrar tabla final
+tabla_varianzas_2
+
+```
+
+```{r}
+# ─────────────────────────────────────────────────────────────────────────────
+# Unir las tablas de varianza de ambos métodos para comparación
+# ─────────────────────────────────────────────────────────────────────────────
+
+tabla_varianzas_1 <- tabla_varianzas_1 |> mutate(Método = "A. INLA + var(η)")
+tabla_varianzas_2 <- tabla_varianzas_2 |> mutate(Método = "B. Xβ posterior")
+
+# Renombrar columnas para empatar
+tabla_comparativa <- bind_rows(tabla_varianzas_1, tabla_varianzas_2) |>
+  relocate(Método, .before = Componente)
+
+# Mostrar tabla comparativa
+tabla_comparativa |> knitr::kable(digits = 3)
+
+```
+
+Los resultados del modelo revelan que, aunque las covariables ambientales presentan coeficientes estadísticamente significativos y con intervalos de credibilidad alejados de cero, su contribución a la varianza total explicada es moderada.El R² marginal estimado por el método 1 fue de 41,3 %, mientras que el del método 2 fue de 19 %. Esta diferencia ilustra cómo la inclusión o exclusión de la estructura aleatoria y la incertidumbre posterior afectan la interpretación de la varianza explicada.
+
+El aparente contraste entre significancia estadística y bajo R² marginal es una característica común en modelos jerárquicos y espaciales. La significancia de los coeficientes refleja su influencia sistemática sobre la variable respuesta, pero no implica necesariamente que tengan un peso dominante en la descomposición de varianza. Con ambos metodos de cálculo de varianza, la estructura espacial —capturada por el campo CAR y el efecto iid— representa más del 60% de la varianza total, lo que sugiere que la pedodiversidad exhibe patrones geográficos que no son plenamente explicados por las covariables incluidas. Esto resalta la importancia de considerar tanto la magnitud de los efectos como su capacidad explicativa dentro del contexto de modelos espaciales bayesianos
+
+```{r plot_varianzas}
+
+
+# Suponiendo que la tabla ya se llama 'tabla_varianzas'
+tabla_varianzas <- tibble::tibble(
+  Componente = c(
+    "Covariables", 
+    "ui (CAR)", 
+    "vi (iid)", 
+    "Era (iid)",
+    "Residual"
+  ),
+  Varianza = c(0.946, 0.672, 0.367, 0.017, 0.302),
+  Porcentaje = c(41.0, 29.2, 15.9, 0.7, 13.1)
+)
+
+p_varianzas <- ggplot(tabla_varianzas, aes(x = reorder(Componente, -Porcentaje), y = Porcentaje, fill = Componente)) +
+  geom_col(show.legend = FALSE, width = 0.65, fill = pal_qualitat[2]) +
+  geom_text(aes(label = paste0(Porcentaje, "%")), vjust = -0.5, size = 4) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Descomposición de la varianza explicada",
+    x = NULL,
+    y = "Porcentaje de la varianza total"
+  ) +
+  theme_minimal(base_size = 13)
+
+p_varianzas
+
+ggsave(
+  filename = here::here("Figures", "varianzas_modelo_besag_iid_era.png"),
+  plot     = p_varianzas,
+  width    = 7,
+  height   = 7,
+  dpi      = 350
+)
+
+  
+```
+
+### 4.7 Campo espacial estructurado (uᵢ)
 
 El modelo espacial con campos separados estima un campo estructurado ui que representa la dependencia entre unidades vecinas. Este componente refleja la autocorrelación espacial latente, es decir, la tendencia de que unidades geográficamente cercanas tengan niveles similares de pedodiversidad, incluso tras controlar por gradientes ambientales y variación geológica.
 
 El efecto estructurado ui es modelado mediante un campo CAR (Condicionalmente Autoregresivo), ajustado con f(id_poly_u, model = "besag"). INLA estima la distribución posterior de ui condicional a los datos, y lo que se representa aquí es:
 
-* Su media posterior: valor esperado de Pr(ui ∣ datos), que refleja el sesgo espacial estructurado en cada unidad.
+-   Su media posterior: valor esperado de Pr(ui ∣ datos), que refleja el sesgo espacial estructurado en cada unidad.
 
-* Su desviación estándar posterior, que indica la incertidumbre de esta estimación.
+-   Su desviación estándar posterior, que indica la incertidumbre de esta estimación.
 
 Estos efectos solo se pueden visualizar como mapas, ya que están definidos espacialmente (uno por polígono), a diferencia de los efectos fijos que son globales y se comparan con forest plots.
 
@@ -1345,38 +1652,36 @@ pal_continuo <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
 p_u_mean <- ggplot(modelo_sf) +
   geom_sf(aes(fill = u_mean), color = NA) +
   scale_fill_gradientn(colours = pal_continuo) +
-  labs(title = "Campo espacial estructurado uᵢ – media posterior", fill = "mean(u)") +
+  labs(title = "Campo espacial estructurado uᵢ", fill = "mean(u)") +
   theme_minimal()
 
 # Mapa de incertidumbre (sd posterior de uᵢ)
 p_u_sd <- ggplot(modelo_sf) +
   geom_sf(aes(fill = u_sd), color = NA) +
   scale_fill_viridis_c(option = "magma", direction = -1) +
-  labs(title = "Incertidumbre del campo uᵢ – desviación estándar", fill = "sd(u)") +
-  theme_minimal()
+  labs(title = "Incertidumbre de uᵢ", fill = "sd(u)") +
+  theme_minimal(base_size = 13)
 
 # Mostrar ambos mapas
-p_u_mean
-p_u_sd
+#p_u_mean
+#p_u_sd
 
 
 ```
 
-*Mapa de la media posterior de uᵢ**
-Este mapa (azul-amarillo-rojo) muestra el valor esperado del campo espacial estructurado uᵢ por polígono, es decir, cuánto se desvía cada unidad de su vecindario, una vez descontados los efectos fijos y el intercepto por era.
+**Mapa de la media posterior de uᵢ** Este mapa (azul-amarillo-rojo) muestra el valor esperado del campo espacial estructurado uᵢ por polígono, es decir, cuánto se desvía cada unidad de su vecindario, una vez descontados los efectos fijos y el intercepto por era.
 
-Zonas con uᵢ > 0 (rojas): tienen niveles de pedodiversidad más altos de lo esperado dado su entorno ambiental (elevación, pendiente, clima...). Aquí el campo espacial "ajusta hacia arriba", lo cual sugiere procesos o condiciones locales que no fueron explicadas por las covariables incluidas. Ejemplos: piedemontes, mosaicos edafológicos complejos, transiciones geológicas abruptas.
+Zonas con uᵢ \> 0 (rojas): tienen niveles de pedodiversidad más altos de lo esperado dado su entorno ambiental (elevación, pendiente, clima...). Aquí el campo espacial "ajusta hacia arriba", lo cual sugiere procesos o condiciones locales que no fueron explicadas por las covariables incluidas. Ejemplos: piedemontes, mosaicos edafológicos complejos, transiciones geológicas abruptas.
 
-Zonas con uᵢ < 0 (azules): tienen valores más bajos de lo esperado tras ajustar por las covariables. Esto puede reflejar homogeneidad edáfica local, procesos de erosión extensiva, o incluso deficiencias en el inventario taxonómico en esas áreas.
+Zonas con uᵢ \< 0 (azules): tienen valores más bajos de lo esperado tras ajustar por las covariables. Esto puede reflejar homogeneidad edáfica local, procesos de erosión extensiva, o incluso deficiencias en el inventario taxonómico en esas áreas.
 
 Zonas en amarillo (uᵢ ≈ 0): indican que el modelo no requiere ajuste espacial en esa unidad; los efectos fijos y el intercepto por era explican bien los patrones observados.
 
-**Mapa de desviación estándar posterior de uᵢ**
-Este mapa (paleta magma) muestra la incertidumbre del modelo respecto al valor estimado de uᵢ en cada polígono.
+**Mapa de desviación estándar posterior de uᵢ** Este mapa (paleta magma) muestra la incertidumbre del modelo respecto al valor estimado de uᵢ en cada polígono.
 
 Las zonas con menor incertidumbre (claras) están distribuidas de forma bastante homogénea, lo que indica una buena estabilización del modelo en la mayoría del territorio.
 
-Las zonas más oscuras (incertidumbre > 0.5) tienden a ubicarse:
+Las zonas más oscuras (incertidumbre \> 0.5) tienden a ubicarse:
 
 En regiones con geometría irregular o aislada (bordes, islas de polígonos).
 
@@ -1384,9 +1689,53 @@ En áreas donde la conectividad espacial (grafo) es débil.
 
 Posiblemente también en polígonos con menos observaciones, aunque en este caso depende del proceso de modelado de la pedodiversidad.
 
+*Finalente se exporta u_mean como .tif*
+
+```{r u__mean_tif}
+
+library(sf)
+library(terra)
+
+# 1. Filtrar solo polígonos con valor en u_mean y quedarse con geometría
+modelo_sf_valido <- modelo_sf[!is.na(modelo_sf$u_mean), c("u_mean", "geometry")]
+
+# 2. Eliminar geometrías vacías o con problemas
+modelo_sf_valido <- modelo_sf_valido[!st_is_empty(modelo_sf_valido), ]
+modelo_sf_valido <- modelo_sf_valido[!is.na(st_geometry(modelo_sf_valido)), ]
+modelo_sf_valido <- st_make_valid(modelo_sf_valido)
+
+# 3. Verificar y asignar CRS si es necesario (ajusta EPSG si conoces el correcto)
+if (is.na(st_crs(modelo_sf_valido))) {
+  st_crs(modelo_sf_valido) <- 4326  # Cambia 4326 por el CRS correcto si no es WGS84
+}
+
+# 4. Simplificar geometría para que no explote la RAM (ajusta tolerancia si es necesario)
+modelo_sf_simple <- st_simplify(modelo_sf_valido, dTolerance = 10)
+
+# 5. Convertir a SpatVector
+modelo_vect <- vect(modelo_sf_simple)
+
+# 6. Crear raster base manualmente a partir de la extensión y CRS del vector
+ext_modelo <- ext(modelo_vect)
+
+# Verifica que la extensión sea válida
+if (any(is.na(ext_modelo))) stop("Extensión espacial contiene NA.")
+
+r_template <- rast(ext_modelo, resolution = 100, crs = crs(modelo_vect))  # resolución ajustable
+
+# 7. Rasterizar el campo u_mean
+r_u_mean <- rasterize(modelo_vect, r_template, field = "u_mean")
+
+# 8. Exportar a GeoTIFF
+writeRaster(r_u_mean, "campo_u_mean.tif", overwrite = TRUE)
+
+# 9. Visualización rápida (opcional)
+plot(r_u_mean)
+
+```
 
 
-### 4.7 Ruido espacial no estructurado (vᵢ)
+### 4.8 Ruido espacial no estructurado (vᵢ)
 
 El modelo también estima una segunda componente espacial: el ruido no estructurado vi, ajustado mediante f(id_poly_v, model = "iid"). Esta componente representa variabilidad independiente entre polígonos, es decir, fluctuaciones locales no relacionadas con los vecinos.
 
@@ -1398,11 +1747,11 @@ Posibles errores de mapeo o heterogeneidades locales mal representadas.
 
 Tal como con ui, INLA proporciona su distribución posterior. Se representan:
 
-* Su media posterior, que indica si hay sesgos locales sistemáticos;
+-   Su media posterior, que indica si hay sesgos locales sistemáticos;
 
-* Su desviación estándar posterior, que refleja la incertidumbre del modelo en cada unidad.
+-   Su desviación estándar posterior, que refleja la incertidumbre del modelo en cada unidad.
 
-```{r}
+```{r vi}
 
 ## ── 4.7 Ruido espacial no estructurado (vᵢ) ────────────────────────────────
 
@@ -1426,18 +1775,18 @@ p_v_mean <- ggplot(modelo_sf) +
 p_v_sd <- ggplot(modelo_sf) +
   geom_sf(aes(fill = v_sd), color = NA) +
   scale_fill_viridis_c(option = "magma", direction = -1) +
-  labs(title = "Incertidumbre de vᵢ – desviación estándar posterior", fill = "sd(v)") +
-  theme_minimal()
+  labs(title = "Incertidumbre de vᵢ – sd posterior", fill = "sd(v)") +
+  theme_minimal(base_size = 13)
 
 # Mostrar mapas
-p_v_mean
-p_v_sd
+#p_v_mean
+#p_v_sd
 
 
 ```
 
 Mapa de media posterior de vi
- 
+
 Valores cercanos a cero en la mayoría del territorio indican que, una vez controlados los efectos fijos (covariables) y el componente estructurado ui, el modelo no necesita realizar grandes ajustes locales no espaciales para capturar la pedodiversidad observada.
 
 Áreas con valores positivos de vi (rojos) reflejan polígonos donde la pedodiversidad fue mayor a la esperada, incluso después de considerar covariables y efecto espacial. Pueden representar sitios atípicos, con condiciones no explicadas por el modelo, como:
@@ -1454,92 +1803,26 @@ condiciones homogéneas dentro de unidades que el modelo sobreestimó,
 
 o posibles errores de clasificación que agrupan taxones diversos como uno solo.
 
-2. Mapa de desviación estándar posterior de vi
- 
+2.  Mapa de desviación estándar posterior de vi
+
 La incertidumbre asociada al vi es relativamente homogénea en todo el territorio, con valores entre 0.42 y 0.55, sin focos de extrema incertidumbre.
 
 Esto sugiere que el modelo estima con confianza razonable que el término no estructurado tiene poca variabilidad, y no contribuye sustancialmente a mejorar el ajuste.
 
-Refuerza la idea de que la mayor parte de la dependencia espacial está bien explicada por ui , y el 
-visimplemente afina el ajuste en casos residuales.
+Refuerza la idea de que la mayor parte de la dependencia espacial está bien explicada por ui , y el visimplemente afina el ajuste en casos residuales.
 
-### 4.6 Predicción y residuos
+```{r viz_ui_vi}
 
-mostrar dónde el modelo BYM2 todavía sobre- o sub-estima la pedodiversidad. Se parte de la media posterior μi y se calcula un residuo estilo Pearson
+p_ui_vi <- (p_u_mean + p_v_mean) / (p_u_sd + p_v_sd)
 
-```{r}
-
-## ─────────────────────────────────────────────────────────────
-##  Mapa de residuos posteriores  (observado – media posterior)
-## ─────────────────────────────────────────────────────────────
-
-# 1 ▸ extrae media y sd de la lista de predicciones de INLA
-pred_df <- fit_bym2$summary.fitted[ , c("mean","sd")]
-
-modelo_sf$mu_post <- modelo_sf$mu_sd <- NA_real_
-modelo_sf$mu_post[keep_log] <- pred_df$mean   # media posterior
-modelo_sf$mu_sd  [keep_log] <- pred_df$sd     # desv. típ. posterior
-
-# 2 ▸ residuo posterior (escala original ‒log10-)
-modelo_sf$resid <- modelo_sf$log_Qdens - modelo_sf$mu_post
-
-# 3 ▸ paleta Zissou 1 (continua) adaptada como diverging
-pal_cont <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
-pal_div  <- c(rev(pal_cont[10:1]), pal_cont[11:90])   # ~amarillo-blanco-púrpura
-
-# 4 ▸ mapa
-p_resid <- ggplot(modelo_sf) +
-  geom_sf(aes(fill = resid), colour = NA) +
-  scale_fill_gradientn(
-    colours = pal_div,
-    limits  = c(-4, 4),          # recorta colas extremas a ±4 u log
-    oob     = scales::squish,    # valores fuera → extremo de la paleta
-    name    = "resid"
-  ) +
-  labs(title = "Residuos posteriores (observado – media posterior)") +
-  theme_minimal()
-
-p_resid            # se renderiza en el cuaderno
-
+ggsave(
+  filename = here::here("Figures", "componentes_ui_vi.png"),
+  plot     = p_ui_vi,
+  width    = 10,
+  height   = 10,
+  dpi      = 350
+)
 
 ```
 
-amarillo → naranjas ( \> 0 ) indican sub-predicción: la pedodiversidad observada es mayor que la estimada por el modelo;
 
-verde-azules ( \< 0 ) señalan sobre-predicción: la pedodiversidad observada es menor que la estimada;
-
-corresponden a ajuste satisfactorio.
-
-La dispersión de colores y la ausencia de bandas extensas de un mismo signo muestran que no persisten patrones espaciales sistemáticos. Un test de Moran sobre los residuos (FALTA), respalda??? que la autocorrelación residual es insignificante y que el término espacial BYM2 cumplió su función de absorber la dependencia.
-
-Esos parches azulados del extremo sur ― donde el modelo sobre-predice la pedodiversidad ― encajan bastante bien con varias limitaciones prácticas de la cartografía nacional de suelos en la Amazonia y el piedemonte andino-amazónico:
-
-Cobertura de muestreo muy desigual Los inventarios históricos (IGAC, IGAC-FAO, proyectos departamentales) apenas pasaban por los grandes ríos navegables y las pistas de colonización. En muchos de esos polígonos sólo existe el mapeo fotointerpretado de los años 1970-1980, con muy pocos perfiles descritos in situ. Consecuencia: la cuenta de taxones (Q) está infra-estimada; el modelo, al asumir que los datos reflejan la realidad, la “corrige” al alza → residuos negativos intensos (azules).
-
-Complejidad edáfica sub-muestreada El relieve de colinas disectadas, terrazas y abanicos aluviales jóvenes genera suelos muy contrastantes a escalas \< 1 km (Fluvisoles, Acrisoles, Plinthosoles, Histosoles localizados). Esa heterogeneidad real no aparece si el polígono se levantó con un único taxón “dominante”. Resultado: predicción basada en topografía/clima (que “espera” un mosaico diverso) \> diversidad observada → residuo negativo.
-
-Acceso físico y situación de orden público Comunidades sin carreteras estables y, durante años, presencia de actores armados dificultaron el trabajo de campo sistemático. Las zonas que mencionas coincidieron con poca o nula actualización catastral/agrónoma. Efecto: sesgo de observación más que un fallo real del modelo ambiental.
-
-Qué hacer con esa señal Variable de esfuerzo de muestreo Incorporar un offset (o covariable) que contabilice número de perfiles/ha o distancia media a vías fluviales y carreteras podría reducir el sesgo.
-
-Validación cruzada espacial estratificada Separar esas áreas “poco accesibles” como fold independiente mostraría si el sobre-ajuste es grave o se debe sobre todo a carencia de datos.
-
-Trabajo de campo dirigido Si tu objetivo final es un mapa operativo, priorizar muestreos en esos polígonos azulados mejorará tanto la base de datos como la capacidad predictiva.
-
-En síntesis, los azules intensos no significan que el modelo “se equivoque” por mala especificación, sino que extrapola hacia regiones sub-levadas. El diagnóstico es útil: señala exactamente dónde la estrategia de muestreo histórica dejó lagunas que conviene subsanar.
-
-## 5. Lo que falta
-
-Definiendo ya los productos básicos de cada capa—estadísticos globales, betas, hiper-parámetros, efectos aleatorios y residuos—quedan varias comprobaciones y extensiones que conviene completar para que el apartado de resultados y discusión sea sólido y coherente con los objetivos del artículo.
-
-En el bloque (1) ajuste global sólo hemos reportado DIC, WAIC y tiempos de cómputo. Falta contrastar esos indicadores con un modelo de referencia sin término espacial (BYM2 reducido a φ = 0) o, al menos, con el SAR-error frequentista. Esa comparación cuantifica la ganancia real de incorporar la estructura CAR. También queda por revisar los “mezcla-beta” internos de INLA (el parámetro κ que controla la precisión de la aproximación de Laplace) para descartar problemas de convergencia; basta con fit_bym2$internal.summary$max.gradient y inla.emarginal sobre el log-marginal likelihood.
-
-En la capa (2) efectos fijos ya tienes los intervalos creíbles y su interpretación, pero sigue pendiente evaluar la colinealidad residual entre covariables (p. ej. con las VIF sobre la matriz X estandarizada) y, sobre todo, representar la contribución relativa de cada bloque de variables (intensidad, variedad y variabilidad) al R² marginal de la respuesta. Eso se obtiene con la descomposición de varianza “variance partitioning” de INLA (inla.qmarginal) o con la versión de partR2 adaptada a LGMs.
-
-Para (3) hiper-parámetros BYM2 ya discutimos magnitud y significado, pero falta la prueba de sensibilidad a los priors. INLA permite re-ajustar el modelo con penalised-complexity priors algo más informativos para la mezcla φ y para la precisión espacial; comparar las nuevas posteriors con las actuales mostrará si las conclusiones dependen del prior inercial que viene por defecto. Además, conviene mapear la ratio σ²_s / σ²_total para ilustrar visualmente qué fracción de varianza absorbe el campo estructurado.
-
-En (4) efectos aleatorios ya tienes la tabla de interceptos por era y el mapa de uᵢ. Faltan dos pasos. Primero, la banda de incertidumbre: un segundo mapa con la desviación típica posterior (u_sd) y un breve comentario sobre dónde el modelo “sabe menos”. Segundo, enlazar cuantitativamente ese campo con la LISA original. El contraste formal es un test de correlación espacial entre uᵢ y los Ii locales—moran.mc(u_mean, lw_sub)—que permitirá afirmar con números, no sólo con inspección ocular, que el BYM2 efectivamente absorbe la mayor parte de los focos Low-Low.
-
-Por último, en (5) predicción y residuos ya generaste el mapa de residuos. Falta el diagnóstico estadístico: histograma o QQ-plot de los residuos normalizados frente a la distribución normal, un correlograma de Moran sobre esos residuos (mismo script que usaste para el correlograma LISA) y, opcionalmente, la curva PIT (Probability Integral Transform) que INLA calcula con control.compute = list(cpo = TRUE). Si el correlograma no muestra p-valores \< 0.05 y el QQ-plot no presenta colas gruesas, podrás afirmar que el modelo deja la estructura espacial prácticamente eliminada y que la suposición gaussiana es aceptable.
-
-Con esas verificaciones adicionales—comparación con modelos nulos, partición de varianza por bloques, sensibilidad a priors, incertidumbre del campo uᵢ y diagnóstico exhaustivo de residuos—la sección de resultados cubrirá todos los puntos críticos del modelo BYM2 y cerrará el círculo que iniciaste con el análisis global y local de autocorrelación.
