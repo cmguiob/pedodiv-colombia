@@ -437,67 +437,16 @@ resumen_grado <- tibble::tibble(
 print(resumen_grado)
 ```
 
-El histograma a continuación muestra la distribución del número de vecinos por polígono. Un patrón razonable es una moda baja (2-6 vecinos) y una cola poco poblada. Barras aisladas muy a la derecha suelen delatar unidades lineales (ríos, carreteras) o multipolígonos mal formados que tocan a cientos de UCS y pueden inflar el peso de unos pocos registros en Moran I.
+El histograma a continuación muestra la distribución del número de vecinos por polígono. Un patrón razonable es una moda baja (2-6 vecinos) y una cola poco poblada. Barras aisladas muy a la derecha suelen delatar unidades lineales (ríos, carreteras) o multipolígonos mal formados que tocan a cientos de UCS y pueden inflar el peso de unos pocos registros en Moran I. 
 
-```{r visualizacion_hist_pesos}
+El mapa visualiza el mismo recuento para localizar dónde ocurren esos valores extremos. Si los “super-nodos” se alinean con ríos o polígonos artificiosos, conviene filtrarlos, disolverlos o reconstruir la vecindad antes de seguir.
 
-#-- Histogram (trim right tail, English labels) ------------------------------
-gg_hist_degree <- ggplot(
-  data.frame(degree = grado_vec) |> dplyr::filter(degree <= 30),
-  aes(x = degree)
-) +
-  geom_histogram(
-    binwidth = 1,
-    fill     = pal_qualitat[1],
-    colour   = "white",
-    boundary = 0, closed = "left"
-  ) +
-  labs(
-    x = "Number of neighbours (Queen degree)",
-    y = "Polygon count",
-    title = "Degree distribution up to 30 neighbours"
-  ) +
-  theme_minimal()
-
-ggsave(
-  here::here("Figures", "hist_queen_degree.png"),
-  plot   = gg_hist_degree,
-  width  = 7, height = 5, dpi = 350           # ← 350 dpi
-)
-
-gg_hist_degree
-```
-
-Cartografía el mismo recuento para localizar dónde ocurren esos valores extremos. Si los “super-nodos” se alinean con ríos o polígonos artificiosos, conviene filtrarlos, disolverlos o reconstruir la vecindad antes de seguir.
-
-```{r}
-
-## Mapa rápido del grado — para localizar outliers
-modelo_sf_s$grado <- grado_vec
-
-p_map_queen_degree <- ggplot(modelo_sf_s |> dplyr::filter(grado <= 200)) +
-  geom_sf(aes(fill = grado), colour = NA) +
-  scale_fill_gradientn(colours = pal_continuo, name = "Neighbors") +
-  labs(title = "Queen degree per polygon") +
-  theme_minimal()
-
-#p_map_queen_degree
-
-ggsave(
-  here::here("Figures", "mapa_grado_queen.png"),
-  plot   = p_map_queen_degree,
-  width  = 8, height = 8, dpi = 350
-)
-```
-
-```{r}
+```{r mosaico_grado}
 
 # ────────────────────────────────────────────────────────────────
 #   Mosaico: Mapa del grado (arriba) + Histograma (abajo)
 #   Relación vertical 3:1, etiquetas en español
 # ────────────────────────────────────────────────────────────────
-
-library(patchwork)  # para combinar gráficos
 
 # Actualiza etiquetas del histograma
 gg_hist_degree_es <- ggplot(
@@ -514,18 +463,25 @@ gg_hist_degree_es <- ggplot(
     x = "Número de vecinos (grado Queen)",
     y = "Número de polígonos"
   ) +
-  theme_minimal()
+  theme_minimal(base_size = 14)
 
 # Actualiza etiquetas del mapa
 modelo_sf_s$grado <- grado_vec
 p_map_queen_degree_es <- ggplot(modelo_sf_s |> dplyr::filter(grado <= 200)) +
   geom_sf(aes(fill = grado), colour = NA) +
-  scale_fill_gradientn(colours = pal_continuo, name = "Vecinos") +
+  scale_fill_gradientn(
+    colours = pal_continuo, 
+    guide   = guide_colourbar(barwidth = unit(0.25,"cm"),
+                              barheight = unit(4,"cm"),
+                              direction = "vertical",
+                              title.position = "top"),
+    name = "Vecinos") +
   labs(title = "Grado de vecindad Queen por polígono") +
-  theme_minimal(base_size = 14)
+  theme_minimal(base_size = 14) +
+  theme(legend.justification = c("right","top"))
 
 # Ensambla mosaico: mapa arriba (3/4), histograma abajo (1/4)
-mosaico_grado <- p_map_queen_degree_es / gg_hist_degree_es + plot_layout(heights = c(3, 1))
+mosaico_grado <- (p_map_queen_degree_es / gg_hist_degree_es) + plot_layout(heights = c(3, 1))
 
 # Exporta imagen
 ggsave(
@@ -719,7 +675,7 @@ p_scatter <- ggplot(scatter_df,
     title = "Diagrama de dispersión de Moran local"
   ) +
   theme_minimal(base_size = 11) +
-  theme(legend.position = "right")
+  theme(legend.justification = c("right","top"))
 
 # 5 ▸ (b) Mapa de clústeres ---------------------------------------------------
 p_clusters <- ggplot(plot_df) +
@@ -727,16 +683,23 @@ p_clusters <- ggplot(plot_df) +
   scale_fill_manual(values = col_lisa, name = "Clúster LISA",
                     drop = FALSE, na.translate = FALSE) +
   labs(title = "Mapa de clústeres LISA") +
-  theme_minimal(base_size = 11)
+  theme_minimal(base_size = 11) +
+  theme(legend.justification = c("right","top"))
 
 # 6 ▸ (c) Mapa de Ii ----------------------------------------------------------
 p_ii <- ggplot(plot_df) +
   geom_sf(aes(fill = Ii_raw), colour = NA) +
   scale_fill_viridis_c(name = "Ii local",
-                       option = "magma", direction = -1,
+                       option = "magma", 
+                       direction = -1,
+                       guide   = guide_colourbar(barwidth = unit(0.3,"cm"),
+                              barheight = unit(3,"cm"),
+                              direction = "vertical",
+                              title.position = "top"),
                        na.value = "white") +
   labs(title = "Valores locales de Ii") +
-  theme_minimal(base_size = 11)
+  theme_minimal(base_size = 11) +
+  theme(legend.justification = c("right","top"))
 
 # 7 ▸ Tripanel y exportación --------------------------------------------------
 p_lisa_tripanel <- (p_scatter | p_clusters | p_ii) +
@@ -989,7 +952,8 @@ p_metricas <- ggplot(tabla_modelos_larga, aes(x = Valor, y = Modelo, fill = Mét
     y = NULL,
     fill = "Métrica"
   ) +
-  theme_minimal(base_size = 13)
+  theme_minimal(base_size = 13) +
+  theme(legend.justification = c("right","top"))
 
 
 ggsave(
@@ -1308,48 +1272,47 @@ En otras palabras, ninguna era muestra un desplazamiento sistemático de la pedo
 
 ### 4.5 Descomposición de la varianza y R² marginal
 
-Con el objetivo de cuantificar la fracción de la variabilidad de la pedodiversidad explicada únicamente por las covariables ambientales observadas, se estimó el **R² marginal** del modelo jerárquico espacial mediante dos métodos complementarios. Ambos se fundamentan en la descomposición de la varianza propuesta por **Nakagawa y Schielzeth (2013)** para modelos mixtos, y adaptada al enfoque bayesiano por  y **Blangiardo y Cameletti (2015)**.
+Con el objetivo de cuantificar la fracción de la variabilidad de la pedodiversidad explicada únicamente por las covariables ambientales observadas, se estimó el **R² marginal** del modelo jerárquico espacial mediante dos métodos complementarios. Ambos se fundamentan en la descomposición de la varianza propuesta por **Nakagawa y Schielzeth (2013)** para modelos mixtos, y adaptada al enfoque bayesiano por y **Blangiardo y Cameletti (2015)**.
 
-Para cuantificar la fracción de la variabilidad de la pedodiversidad explicada exclusivamente por las covariables ambientales observadas, se procedió a estimar el R² marginal del modelo jerárquico espacial. Esta estimación se realizó a través de dos métodos complementarios [conversación previa], ambos fundamentados en el marco de la descomposición de la varianza **(Gelman et al. 2019)**. Esta descomposición fue propuesta originalmente por **Nakagawa y Schielzeth (2013)** para modelos mixtos, distinguiendo claramente entre la varianza atribuible a los efectos fijos y la varianza total.
+Para cuantificar la fracción de la variabilidad de la pedodiversidad explicada exclusivamente por las covariables ambientales observadas, se procedió a estimar el R² marginal del modelo jerárquico espacial. Esta estimación se realizó a través de dos métodos complementarios \[conversación previa\], ambos fundamentados en el marco de la descomposición de la varianza **(Gelman et al. 2019)**. Esta descomposición fue propuesta originalmente por **Nakagawa y Schielzeth (2013)** para modelos mixtos, distinguiendo claramente entre la varianza atribuible a los efectos fijos y la varianza total.
 
-La adaptación de este concepto al contexto bayesiano se realiza siguiendo las directrices de Gelman et al. (2019), quienes proponen una R² basada en la varianza explicada y la varianza residual obtenidas directamente de las distribuciones predictivas del modelo. Además, se incorporan las consideraciones metodológicas para la estimación de varianzas a partir de los parámetros de precisión en el entorno de INLA (Integrated Nested Laplace Approximation), un enfoque de inferencia bayesiana aproximada particularmente eficiente para modelos Gaussianos latentes [Rue et al. (2009), 435], tal como lo detallan Blangiardo y Cameletti (2015) y Gómez-Rubio (2021) [Blangiardo y Cameletti (2015), 1, 73; Gómez-Rubio (2021), 135].
+La adaptación de este concepto al contexto bayesiano se realiza siguiendo las directrices de Gelman et al. (2019), quienes proponen una R² basada en la varianza explicada y la varianza residual obtenidas directamente de las distribuciones predictivas del modelo. Además, se incorporan las consideraciones metodológicas para la estimación de varianzas a partir de los parámetros de precisión en el entorno de INLA (Integrated Nested Laplace Approximation), un enfoque de inferencia bayesiana aproximada particularmente eficiente para modelos Gaussianos latentes \[Rue et al. (2009), 435\], tal como lo detallan Blangiardo y Cameletti (2015) y Gómez-Rubio (2021) \[Blangiardo y Cameletti (2015), 1, 73; Gómez-Rubio (2021), 135\].
 
 **Método 1 – Ley de la varianza total aplicada al predictor lineal**
 
-Este enfoque estima la varianza explicada por el predictor lineal completo ηᵢ a partir de su distribución marginal posterior [Gómez-Rubio (2021), 102]. Se calcula: `σ²_η = Var( E[ηᵢ] ) + E[ Var(ηᵢ) ]` [Gelman et al. (2019), 351, 354] donde:
+Este enfoque estima la varianza explicada por el predictor lineal completo ηᵢ a partir de su distribución marginal posterior \[Gómez-Rubio (2021), 102\]. Se calcula: `σ²_η = Var( E[ηᵢ] ) + E[ Var(ηᵢ) ]` \[Gelman et al. (2019), 351, 354\] donde:
 
-• `Var( E[ηᵢ]` ) es la varianza empírica de las medias posteriores del predictor,
-• `E[ Var(ηᵢ) ]` es el promedio de las varianzas marginales de cada ηᵢ. 
+• `Var( E[ηᵢ]` ) es la varianza empírica de las medias posteriores del predictor, • `E[ Var(ηᵢ) ]` es el promedio de las varianzas marginales de cada ηᵢ.
 
 Ambos términos se extraen de `summary.linear.predictor`, una salida estándar de INLA que proporciona las medias (mean) y desviaciones estándar (sd) posteriores para cada ηᵢ. El predictor lineal (ηᵢ) en INLA combina los efectos fijos, aleatorios y residuales. Aunque esta medida no aísla la contribución exclusiva de las covariables, sí representa la capacidad predictiva total del modelo, tal como lo proponen Gelman et al. (2019).
 
-La varianza total del modelo se obtiene como: `σ²_total = σ²_η + σ²ᵤ + σ²ᵥ + σ²ₑᵣₐ + σ²ₑ` Esta descomposición de la varianza total es una práctica común en el análisis de modelos mixtos [Nakagawa y Schielzeth (2013), 445]. Cada componente (efecto aleatorio u, v, era y error ε) se estima a partir de las medias posteriores de las precisiones (τ) [Blangiardo y Cameletti (2015), 1] como `σ² = 1 / E[τ]` 
+La varianza total del modelo se obtiene como: `σ²_total = σ²_η + σ²ᵤ + σ²ᵥ + σ²ₑᵣₐ + σ²ₑ` Esta descomposición de la varianza total es una práctica común en el análisis de modelos mixtos \[Nakagawa y Schielzeth (2013), 445\]. Cada componente (efecto aleatorio u, v, era y error ε) se estima a partir de las medias posteriores de las precisiones (τ) \[Blangiardo y Cameletti (2015), 1\] como `σ² = 1 / E[τ]`
 
-Este enfoque es común en aplicaciones con INLA [Blangiardo y Cameletti (2015), 1; Gómez-Rubio (2021)] y los resúmenes de hiperparámetros de INLA proporcionan las medias posteriores de estas precisiones. Sin embargo, al usar la transformación directa `1/mean(τ)`, puede subestimar la varianza verdadera si las distribuciones posteriores de las precisiones son asimétricas [Rue et al. (2009), 460]. Para una estimación más precisa de la media posterior de la varianza, se recomienda calcular la esperanza de la inversa de la precisión, `E[1/τ]`, utilizando funciones como inla.emarginal [Blangiardo y Cameletti (2015)].
+Este enfoque es común en aplicaciones con INLA \[Blangiardo y Cameletti (2015), 1; Gómez-Rubio (2021)\] y los resúmenes de hiperparámetros de INLA proporcionan las medias posteriores de estas precisiones. Sin embargo, al usar la transformación directa `1/mean(τ)`, puede subestimar la varianza verdadera si las distribuciones posteriores de las precisiones son asimétricas \[Rue et al. (2009), 460\]. Para una estimación más precisa de la media posterior de la varianza, se recomienda calcular la esperanza de la inversa de la precisión, `E[1/τ]`, utilizando funciones como inla.emarginal \[Blangiardo y Cameletti (2015)\].
 
-Finalmente, el R² marginal se calcula como: R²₁ = σ²_η / σ²_total Este valor suele ser más alto porque incluye la variabilidad explicada por la estructura aleatoria del modelo además de los efectos fijos, lo que lo alinea conceptualmente con una R² condicional en los modelos lineales generalizados mixtos [Nakagawa y Schielzeth (2013), 445].
+Finalmente, el R² marginal se calcula como: R²₁ = σ²_η / σ²_total Este valor suele ser más alto porque incluye la variabilidad explicada por la estructura aleatoria del modelo además de los efectos fijos, lo que lo alinea conceptualmente con una R² condicional en los modelos lineales generalizados mixtos \[Nakagawa y Schielzeth (2013), 445\].
 
----
+------------------------------------------------------------------------
 
 **Método 2 – Varianza del predictor fijo η_fijos = Xβ̂**
 
 Este enfoque calcula exclusivamente la varianza explicada por las covariables observadas (efectos fijos), excluyendo toda contribución aleatoria. Se construye el predictor lineal fijo como:
 
-`η_fijos = Xβ̂`` 
+\`η_fijos = Xβ̂\`\`
 
 donde X es la matriz de diseño de los efectos fijos y β̂ son las medias posteriores de los coeficientes de los efectos fijos, obtenidas de summary.fixed en INLA. La varianza de este predictor fijo se estima como:
 
 `σ²_Xβ = Var(η_fijos)`
 
-Este método representa de manera estricta la varianza atribuible a los efectos lineales de las covariables [Nakagawa y Schielzeth (2013), 417, 420]. Nakagawa y Schielzeth (2013) lo proponen como r2f (varianza calculada a partir de los componentes de efectos fijos) para la R² marginal en modelos lineales generalizados mixtos (GLMMs) [Nakagawa y Schielzeth (2013), 420]. Aunque Gelman et al. (2019) utilizan el término `varfit` para la varianza de las medias predictivas modeladas, esta aplicación se restringe aquí explícitamente a la contribución de los efectos fijos para alinearse con la definición de R² marginal de Nakagawa y Schielzeth (2013) [Gelman et al. (2019), 327, 328; Nakagawa y Schielzeth (2013), 420].
+Este método representa de manera estricta la varianza atribuible a los efectos lineales de las covariables \[Nakagawa y Schielzeth (2013), 417, 420\]. Nakagawa y Schielzeth (2013) lo proponen como r2f (varianza calculada a partir de los componentes de efectos fijos) para la R² marginal en modelos lineales generalizados mixtos (GLMMs) \[Nakagawa y Schielzeth (2013), 420\]. Aunque Gelman et al. (2019) utilizan el término `varfit` para la varianza de las medias predictivas modeladas, esta aplicación se restringe aquí explícitamente a la contribución de los efectos fijos para alinearse con la definición de R² marginal de Nakagawa y Schielzeth (2013) \[Gelman et al. (2019), 327, 328; Nakagawa y Schielzeth (2013), 420\].
 
-Las varianzas de los efectos aleatorios (u, v, era) y del error (ε) se estiman ahora usando la esperanza de la transformación inversa de la distribución posterior de la precisión (τ) [Blangiardo y Cameletti (2015), 1, 73]:
+Las varianzas de los efectos aleatorios (u, v, era) y del error (ε) se estiman ahora usando la esperanza de la transformación inversa de la distribución posterior de la precisión (τ) \[Blangiardo y Cameletti (2015), 1, 73\]:
 
-σ² = E[1 / τ]
+σ² = E\[1 / τ\]
 
-Este procedimiento, implementado con inla.emarginal(function(x) 1/x, marginal), captura mejor la incertidumbre de la distribución de τ al calcular la media de la varianza en lugar de la inversa de la media de la precisión [Blangiardo y Cameletti (2015), 73; Gómez-Rubio (2021), 135, 137]. Esto es particularmente importante si las distribuciones posteriores de las precisiones son asimétricas, lo que podría llevar a una subestimación de la varianza verdadera si se usa la transformación directa 1/mean(τ) [Rue et al. (2009), 46].
+Este procedimiento, implementado con inla.emarginal(function(x) 1/x, marginal), captura mejor la incertidumbre de la distribución de τ al calcular la media de la varianza en lugar de la inversa de la media de la precisión \[Blangiardo y Cameletti (2015), 73; Gómez-Rubio (2021), 135, 137\]. Esto es particularmente importante si las distribuciones posteriores de las precisiones son asimétricas, lo que podría llevar a una subestimación de la varianza verdadera si se usa la transformación directa 1/mean(τ) \[Rue et al. (2009), 46\].
 
-La varianza total del modelo se define como la suma de las varianzas de los efectos fijos, los efectos aleatorios y el error residual [Nakagawa y Schielzeth (2013), 424]:
+La varianza total del modelo se define como la suma de las varianzas de los efectos fijos, los efectos aleatorios y el error residual \[Nakagawa y Schielzeth (2013), 424\]:
 
 `σ²_total = σ²_Xβ + σ²ᵤ + σ²ᵥ + σ²ₑᵣₐ + σ²ₑ`
 
@@ -1357,24 +1320,20 @@ Finalmente, el R² marginal se calcula como:
 
 `R²₂ = σ²_Xβ / σ²_total`
 
-Este enfoque es más conservador, ya que el numerador solo incluye la varianza explicada por los predictores observables (efectos fijos), sin influencia directa de la variabilidad inducida por la estructura espacial o jerárquica de los efectos aleatorios [Nakagawa y Schielzeth (2013), 424, 425].
----
+## Este enfoque es más conservador, ya que el numerador solo incluye la varianza explicada por los predictores observables (efectos fijos), sin influencia directa de la variabilidad inducida por la estructura espacial o jerárquica de los efectos aleatorios \[Nakagawa y Schielzeth (2013), 424, 425\].
 
 #### ▪ Diferencias clave entre ambos métodos
 
 Aunque ambos enfoques comparten la misma fórmula general de R² marginal, difieren en dos aspectos fundamentales:
 
-1. **Estimación de la varianza explicada**:
-   - Método 1 incluye tanto efectos fijos como aleatorios en el predictor lineal (ηᵢ), reflejando la varianza explicada por todo el modelo.
-   - Método 2 aísla los efectos fijos (Xβ̂), ofreciendo una estimación más estricta.
-
-2. **Estimación de las varianzas de los efectos aleatorios y del error**:
-   - Método 1 usa **1 / E[τ]** (inverso de la media posterior de la precisión).
-   - Método 2 usa **E[1 / τ]** (media de la inversa de τ, calculada con `inla.emarginal`), que es más precisa cuando la distribución de τ es asimétrica.
+1.  **Estimación de la varianza explicada**:
+    -   Método 1 incluye tanto efectos fijos como aleatorios en el predictor lineal (ηᵢ), reflejando la varianza explicada por todo el modelo.
+    -   Método 2 aísla los efectos fijos (Xβ̂), ofreciendo una estimación más estricta.
+2.  **Estimación de las varianzas de los efectos aleatorios y del error**:
+    -   Método 1 usa **1 / E\[τ\]** (inverso de la media posterior de la precisión).
+    -   Método 2 usa **E\[1 / τ\]** (media de la inversa de τ, calculada con `inla.emarginal`), que es más precisa cuando la distribución de τ es asimétrica.
 
 Estas diferencias explican por qué los valores de **σ²_era** y **σ²ₑ** no coinciden exactamente entre ambos métodos, a pesar de que conceptualmente representan los mismos componentes. El método 2, al integrar la variabilidad posterior de τ, suele arrojar valores ligeramente mayores para estas varianzas.
-
-
 
 ```{r varianzas_metodo_A}
 
@@ -1454,8 +1413,6 @@ tabla_varianzas_1
 
 
 ```
-
-
 
 ```{r varianzas_metodo_B}
 
@@ -1564,8 +1521,8 @@ tabla_varianzas_2
 # Unir las tablas de varianza de ambos métodos para comparación
 # ─────────────────────────────────────────────────────────────────────────────
 
-tabla_varianzas_1 <- tabla_varianzas_1 |> mutate(Método = "A. INLA + var(η)")
-tabla_varianzas_2 <- tabla_varianzas_2 |> mutate(Método = "B. Xβ posterior")
+tabla_varianzas_1 <- tabla_varianzas_1 |> mutate(Método = "A. INLA + var(E[η]) + mean(Var[η])")
+tabla_varianzas_2 <- tabla_varianzas_2 |> mutate(Método = "B. η = Xβ̂ posterior")
 
 # Renombrar columnas para empatar
 tabla_comparativa <- bind_rows(tabla_varianzas_1, tabla_varianzas_2) |>
@@ -1582,41 +1539,58 @@ El aparente contraste entre significancia estadística y bajo R² marginal es un
 
 ```{r plot_varianzas}
 
-
-# Suponiendo que la tabla ya se llama 'tabla_varianzas'
-tabla_varianzas <- tibble::tibble(
-  Componente = c(
-    "Covariables", 
-    "ui (CAR)", 
-    "vi (iid)", 
-    "Era (iid)",
-    "Residual"
-  ),
-  Varianza = c(0.946, 0.672, 0.367, 0.017, 0.302),
-  Porcentaje = c(41.0, 29.2, 15.9, 0.7, 13.1)
+# 1. Crear columna con etiquetas simplificadas para cada fila
+etiquetas_cortas <- c(
+  "Covariables", "ui (CAR)", "vi (iid)", "Era (iid)", "Residual",
+  "Covariables", "ui (CAR)", "vi (iid)", "Era (iid)", "Residual"
 )
 
-p_varianzas <- ggplot(tabla_varianzas, aes(x = reorder(Componente, -Porcentaje), y = Porcentaje, fill = Componente)) +
-  geom_col(show.legend = FALSE, width = 0.65, fill = pal_qualitat[2]) +
-  geom_text(aes(label = paste0(Porcentaje, "%")), vjust = -0.5, size = 4) +
+tabla_plot <- tabla_comparativa |>
+  mutate(
+    Componente_simple = factor(etiquetas_cortas, levels = unique(etiquetas_cortas)),
+    Método = factor(Método, levels = c(
+      "A. INLA + var(E[η]) + mean(Var[η])", 
+      "B. η = Xβ̂ posterior"
+    ))
+  )
+
+# 2. Gráfico comparativo con leyenda horizontal en la parte inferior
+p_comparativo <- ggplot(tabla_plot, aes(
+  x = Componente_simple,
+  y = Porcentaje,
+  fill = Método
+)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.65) +
+  geom_text(aes(label = paste0(round(Porcentaje, 1), "%")),
+            position = position_dodge(width = 0.7),
+            vjust = -0.4, size = 3.5) +
+  scale_fill_manual(values = c(pal_qualitat[1], pal_qualitat[2])) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
   labs(
-    title = "Descomposición de la varianza explicada",
+    title = "Comparación de la descomposición de varianza entre métodos",
     x = NULL,
-    y = "Porcentaje de la varianza total"
+    y = "Porcentaje de la varianza total",
+    fill = "Método"
   ) +
-  theme_minimal(base_size = 13)
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.justification = c(0, 0)  # izquierda
+  )
 
-p_varianzas
 
+# 3. Exportar figura
 ggsave(
-  filename = here::here("Figures", "varianzas_modelo_besag_iid_era.png"),
-  plot     = p_varianzas,
-  width    = 7,
+  filename = here::here("Figures", "comparacion_varianzas_metodos.png"),
+  plot     = p_comparativo,
+  width    = 8,
   height   = 7,
   dpi      = 350
 )
 
+p_comparativo
   
 ```
 
@@ -1691,12 +1665,13 @@ Posiblemente también en polígonos con menos observaciones, aunque en este caso
 
 *Finalente se exporta u_mean como .tif*
 
-```{r u__mean_tif}
+```{r u_mean_tif}
+
 
 library(sf)
 library(terra)
 
-# 1. Filtrar solo polígonos con valor en u_mean y quedarse con geometría
+# 1. Filtrar polígonos con valor en u_mean y quedarse con geometría
 modelo_sf_valido <- modelo_sf[!is.na(modelo_sf$u_mean), c("u_mean", "geometry")]
 
 # 2. Eliminar geometrías vacías o con problemas
@@ -1704,36 +1679,37 @@ modelo_sf_valido <- modelo_sf_valido[!st_is_empty(modelo_sf_valido), ]
 modelo_sf_valido <- modelo_sf_valido[!is.na(st_geometry(modelo_sf_valido)), ]
 modelo_sf_valido <- st_make_valid(modelo_sf_valido)
 
-# 3. Verificar y asignar CRS si es necesario (ajusta EPSG si conoces el correcto)
+# 3. Verificar y asignar CRS si falta
 if (is.na(st_crs(modelo_sf_valido))) {
-  st_crs(modelo_sf_valido) <- 4326  # Cambia 4326 por el CRS correcto si no es WGS84
+  st_crs(modelo_sf_valido) <- 4326  # Cambia si usas otro CRS
 }
 
-# 4. Simplificar geometría para que no explote la RAM (ajusta tolerancia si es necesario)
-modelo_sf_simple <- st_simplify(modelo_sf_valido, dTolerance = 10)
+# 4. Reproyectar a CRS en metros (recomendado para rasterización)
+modelo_sf_proj <- st_transform(modelo_sf_valido, 3116)  # MAGNA-SIRGAS (Colombia)
 
-# 5. Convertir a SpatVector
+# 5. Simplificar geometría para evitar sobrecarga (opcional pero útil)
+modelo_sf_simple <- st_simplify(modelo_sf_proj, dTolerance = 100)  # en metros
+
+# 6. Convertir a SpatVector (terra)
 modelo_vect <- vect(modelo_sf_simple)
 
-# 6. Crear raster base manualmente a partir de la extensión y CRS del vector
+# 7. Crear raster base a partir de extensión y CRS del vector
 ext_modelo <- ext(modelo_vect)
+stopifnot(!any(is.na(c(ext_modelo))))  # validar que no haya NA en la extensión
 
-# Verifica que la extensión sea válida
-if (any(is.na(ext_modelo))) stop("Extensión espacial contiene NA.")
+r_template <- rast(ext_modelo, resolution = 100, crs = crs(modelo_vect))  # resolución ajustable (100 m)
 
-r_template <- rast(ext_modelo, resolution = 100, crs = crs(modelo_vect))  # resolución ajustable
-
-# 7. Rasterizar el campo u_mean
+# 8. Rasterizar el campo u_mean
 r_u_mean <- rasterize(modelo_vect, r_template, field = "u_mean")
 
-# 8. Exportar a GeoTIFF
+# 9. Exportar a archivo GeoTIFF
 writeRaster(r_u_mean, "campo_u_mean.tif", overwrite = TRUE)
 
-# 9. Visualización rápida (opcional)
+# 10. (Opcional) Visualización rápida
 plot(r_u_mean)
 
-```
 
+```
 
 ### 4.8 Ruido espacial no estructurado (vᵢ)
 
@@ -1824,5 +1800,3 @@ ggsave(
 )
 
 ```
-
-
