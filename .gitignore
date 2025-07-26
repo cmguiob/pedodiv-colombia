@@ -3,3 +3,6 @@
 
 #Ignore csv
 *csv
+
+#Ignore eps
+*eps

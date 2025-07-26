@@ -437,7 +437,7 @@ resumen_grado <- tibble::tibble(
 print(resumen_grado)
 ```
 
-El histograma a continuación muestra la distribución del número de vecinos por polígono. Un patrón razonable es una moda baja (2-6 vecinos) y una cola poco poblada. Barras aisladas muy a la derecha suelen delatar unidades lineales (ríos, carreteras) o multipolígonos mal formados que tocan a cientos de UCS y pueden inflar el peso de unos pocos registros en Moran I. 
+El histograma a continuación muestra la distribución del número de vecinos por polígono. Un patrón razonable es una moda baja (2-6 vecinos) y una cola poco poblada. Barras aisladas muy a la derecha suelen delatar unidades lineales (ríos, carreteras) o multipolígonos mal formados que tocan a cientos de UCS y pueden inflar el peso de unos pocos registros en Moran I.
 
 El mapa visualiza el mismo recuento para localizar dónde ocurren esos valores extremos. Si los “super-nodos” se alinean con ríos o polígonos artificiosos, conviene filtrarlos, disolverlos o reconstruir la vecindad antes de seguir.
 

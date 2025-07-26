@@ -1,0 +1,592 @@
+---
+title: "Figures for article"
+subtitle: "Modelado espacial de pedodiversidad"
+author: "Carlos M. Guío Blanco"
+format: html
+editor: visual
+---
+
+## Figure 1. Response variable
+
+Figure 1. Spatial and statistical representation of the diversity response variable.  
+(A) Rao’s quadratic entropy (Q); (B) log-transformed taxonomic diversity per area [log₁₀(Q/A)];  
+(C) spatial map of Q; and (D) spatial map of log₁₀(Q/A).
+
+```{r}
+
+# Generic map function
+map_resp <- function(df, var, legend_lab, trans = "identity", breaks = waiver(), labels_fn = waiver()) {
+  ggplot(df) +
+    geom_sf(aes(fill = {{ var }}), colour = NA) +
+    scale_fill_gradientn(
+      colours  = pal_resp,
+      na.value = "white",
+      trans    = trans,
+      guide    = guide_colourbar(
+        direction      = "vertical",
+        barwidth       = unit(0.25, "cm"),
+        barheight      = unit(3.5, "cm"),
+        title.position = "top"
+      ),
+      name     = legend_lab,
+      breaks   = breaks,
+      labels   = labels_fn
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.justification = c("right", "top"))
+}
+
+# Histograms and maps
+p_Q <- ggplot(ucs_rao_sf_4326, aes(x = Q)) +
+  geom_histogram(fill = pal_resp[7], bins = 30, colour = "white") +
+  labs(x = "Q", y = "Count") +
+  theme_minimal(base_size = 12)
+
+p_logQdens <- ggplot(ucs_rao_sf_4326, aes(x = Qdens)) +
+  geom_histogram(fill = pal_resp[7], bins = 30, colour = "white") +
+  scale_x_log10(breaks = scales::log_breaks(n = 4), labels = scales::label_scientific()) +
+  labs(x = expression("log"[10] * "(Q/A)"), y = "Count") +
+  theme_minimal(base_size = 12)
+
+p_map_Q <- map_resp(ucs_rao_sf_4326, Q, "Q")
+
+rng_qd     <- range(ucs_rao_sf_4326$Qdens, na.rm = TRUE)
+log_breaks <- scales::log_breaks(n = 4)(rng_qd)
+p_map_logQdens <- map_resp(ucs_rao_sf_4326, Qdens, "Q/A", trans = "log10", breaks = log_breaks, labels_fn = scales::label_scientific())
+
+p_respuesta_eda <- (p_Q | p_logQdens) / (p_map_Q | p_map_logQdens) + plot_layout(heights = c(1, 3))
+
+ggsave(
+  here::here("Figures", "response_eda_en.eps"),
+  plot   = p_respuesta_eda,
+  width  = 10,
+  height = 10,
+  dpi    = 350,
+  device = cairo_ps
+)
+markdown
+Copiar
+Editar
+
+
+```
+
+
+
+## Figure 2. Environmental covariates
+
+Figure 2. Spatial distribution of environmental covariates.  
+(A–D) mean values: (A) elevation (m), (B) slope (°), (C) land surface temperature (°C), (D) precipitation (mm);  
+(E) geological units; (F–I) coefficient of variation (log-scale) for each covariate.  
+Panel (J) left blank for symmetry.
+
+
+```{r Figure_2}
+# ──────────────────────────────────────────────────────────────────────
+# Figura: Mapas de media y CV de variables ambientales (mosaico 4x2)
+# ──────────────────────────────────────────────────────────────────────
+
+# Cargar patchwork
+library(patchwork)
+
+# Paletas
+mono_pal <- function(col_hex, n = 100) colorRampPalette(c("#ffffff", col_hex))(n)
+pal_dem_cv        <- mono_pal(head(pal_dem,   1))
+pal_pendiente_cv  <- mono_pal(tail(pal_slope, 1))
+pal_lst_cv        <- mono_pal(tail(pal_lst,   1))
+pal_prec_cv       <- mono_pal(tail(pal_prec,  1))
+
+# Función para mapas de magnitud
+map_mag <- function(data, var, pal, titulo, leyenda){
+  ggplot(data) +
+    geom_sf(aes(fill = {{ var }}), colour = NA) +
+    scale_fill_gradientn(
+      colours = pal, na.value = "white",
+      guide   = guide_colourbar(barwidth = unit(0.25,"cm"),
+                                barheight = unit(2.5,"cm"),
+                                direction = "vertical",
+                                title.position = "top"),
+      name = leyenda
+    ) +
+    labs(title = titulo) +
+    coord_sf(expand = FALSE) +
+    scale_x_continuous(breaks = seq(-79, -70, by = 3)) +
+    theme_minimal() +
+    theme(legend.justification = c("right","top"),
+          plot.title = element_text(size = 10, hjust = .5))
+}
+
+# Función para mapas de CV
+map_cv <- function(data, var, pal, titulo){
+  ggplot(dplyr::filter(data, {{ var }} > 0)) +
+    geom_sf(aes(fill = {{ var }}), colour = NA) +
+    scale_fill_gradientn(
+      colours = pal,
+      trans   = "log10",
+      breaks  = scales::trans_breaks("log10", function(x) 10^x),
+      labels  = scales::label_scientific(digits = 1),
+      na.value = "white",
+      guide   = guide_colourbar(barwidth = unit(0.25,"cm"),
+                                barheight = unit(2.5,"cm"),
+                                direction = "vertical",
+                                title.position = "top"),
+      name    = "CV"
+    ) +
+    labs(title = titulo) +
+    coord_sf(expand = FALSE) +
+    scale_x_continuous(breaks = seq(-79, -70, by = 3)) +
+    theme_minimal() +
+    theme(legend.justification = c("right","top"),
+          plot.title = element_text(size = 10, hjust = .5))
+}
+
+# Mapas
+p_dem_media    <- map_mag(modelo_df, dem_media,       pal_dem,   "Mean elevation (m)", "m")
+p_pend_media   <- map_mag(modelo_df, pendiente_media, pal_slope, "Mean slope (°)", "°")
+p_lst_media    <- map_mag(modelo_df, lst_media,       pal_lst,   "Mean LST (°C)", "°C")
+p_prec_media   <- map_mag(modelo_df, precip_media,    pal_prec,  "Mean precipitation (mm)", "mm")
+
+p_dem_cv       <- map_cv(modelo_df, dem_cv,            pal_dem_cv,       "Elevation CV")
+p_pend_cv      <- map_cv(modelo_df, pendiente_cv,      pal_pendiente_cv, "Slope CV")
+p_lst_cv       <- map_cv(modelo_df, lst_cv_temporal,   pal_lst_cv,       "LST CV")
+p_prec_cv      <- map_cv(modelo_df, precip_cv_temporal,pal_prec_cv,      "Precipitation CV")
+
+# Mosaico
+blank <- ggplot() + theme_void()
+
+layout <- area(
+  t = c(1,1,1,1,1, 2,2,2,2,2),
+  l = c(1,2,3,4,5, 1,2,3,4,5),
+  b = c(1,1,1,1,1, 2,2,2,2,2),
+  r = c(1,2,3,4,5, 1,2,3,4,5)
+)
+
+p_mosaico <- p_dem_media + p_pend_media + p_lst_media + p_prec_media + p_mapa_geo +
+             p_dem_cv    + p_pend_cv    + p_lst_cv    + p_prec_cv    + blank +
+             plot_layout(design = layout)
+
+# Exportar
+ggsave(
+  here::here("Figures", "English", "mosaic_covariates_en.png"),
+  plot   = p_mosaico,
+  width  = 12,
+  height = 6,
+  dpi    = 350
+)
+
+
+```
+
+
+Figure 3. Histogram and map of Queen neighborhood degree.  
+The histogram shows the frequency of polygons with different numbers of neighbors.  
+The map highlights spatial distribution of degree values, helping detect super-nodes or linear artifacts.
+
+```{r Figure_3}
+
+
+# Histogram
+gg_hist_degree_en <- ggplot(
+  data.frame(grado = grado_vec) |> dplyr::filter(grado <= 30),
+  aes(x = grado)
+) +
+  geom_histogram(
+    binwidth = 1,
+    fill     = pal_qualitat[1],
+    colour   = "white",
+    boundary = 0, closed = "left"
+  ) +
+  labs(
+    x = "Number of neighbours (Queen degree)",
+    y = "Polygon count"
+  ) +
+  theme_minimal()
+
+# Map
+p_map_queen_degree_en <- ggplot(modelo_sf_s |> dplyr::filter(grado <= 200)) +
+  geom_sf(aes(fill = grado), colour = NA) +
+  scale_fill_gradientn(
+    colours = pal_continuo,
+    guide   = guide_colourbar(
+      barwidth = unit(0.25, "cm"),
+      barheight = unit(4, "cm"),
+      direction = "vertical",
+      title.position = "top"
+    ),
+    name = "Neighbours"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.justification = c("right", "top"))
+
+# Combine
+mosaic_degree_en <- p_map_queen_degree_en / gg_hist_degree_en + plot_layout(heights = c(3, 1))
+
+# Export EPS
+ggsave(
+  here::here("Figures","English", "Figure 3.eps"),
+  plot   = mosaic_degree_en,
+  width  = 8,
+  height = 10,
+  dpi    = 350,
+  device = cairo_ps
+)
+```
+
+## Figure 4. Local indicators of spatial association (LISA)
+
+Figure 4. Local Moran’s I tripanel for standardized log₁₀(Q/area):  
+(A) Moran scatterplot; (B) LISA cluster map; (C) local Ii statistic.  
+These panels visualize clustering patterns and outliers prior to spatial modeling.
+
+```{r Figure_4}
+# Prepare data
+plot_df <- modelo_sf_s[keep_log, ]
+scatter_df <- plot_df |> 
+  mutate(z_logQ = as.numeric(scale(log_Qdens)),
+         z_lag  = as.numeric(scale(lag_raw))) |> 
+  filter(!is.na(cluster_raw))
+
+# Cluster palette
+pal_cont <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+col_lisa <- c("High-High" = pal_cont[90],
+              "Low-Low"   = pal_cont[10],
+              "High-Low"  = pal_cont[70],
+              "Low-High"  = pal_cont[30],
+              "No sig."   = "grey90")
+levels_lisa <- c("No sig.", "Low-Low", "Low-High", "High-Low", "High-High")
+scatter_df <- scatter_df |> 
+  mutate(cluster_raw = factor(cluster_raw, levels = levels_lisa),
+         cluster_sig = ifelse(cluster_raw == "No sig.", "No", "Yes"))
+
+# Global I label
+txt_I <- sprintf("Global Moran I = %.4f (p = %.3g)", I_global, p_global)
+
+# Scatterplot
+p_scatter <- ggplot(scatter_df,
+                    aes(z_logQ, z_lag, colour = cluster_raw, alpha = cluster_sig)) +
+  geom_point(size = .8) +
+  scale_alpha_manual(values = c("No" = 1, "Yes" = .8), guide = "none") +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE,
+              colour = "black", linewidth = .4) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey60") +
+  scale_colour_manual(values = col_lisa, name = "LISA cluster", drop = FALSE) +
+  annotate("text", x = -Inf, y =  Inf, hjust = -0.04, vjust = 1.1,
+           label = txt_I, size = 3.3, fontface = "italic") +
+  guides(colour = guide_legend(override.aes = list(size = 3))) +
+  labs(x = "Standardized log₁₀(Q / area)", y = "Spatial lag (W · z)") +
+  theme_minimal(base_size = 11) +
+  theme(legend.justification = c("right", "top"))
+
+# Cluster map
+p_clusters <- ggplot(plot_df) +
+  geom_sf(aes(fill = cluster_raw), colour = NA) +
+  scale_fill_manual(values = col_lisa, name = "LISA cluster",
+                    drop = FALSE, na.translate = FALSE) +
+  theme_minimal(base_size = 11) +
+  theme(legend.justification = c("right", "top"))
+
+# Local Ii map
+p_ii <- ggplot(plot_df) +
+  geom_sf(aes(fill = Ii_raw), colour = NA) +
+  scale_fill_viridis_c(name = "Local Ii", option = "magma", direction = -1,
+                       guide = guide_colourbar(
+                         barwidth  = unit(0.3, "cm"),
+                         barheight = unit(3, "cm"),
+                         direction = "vertical",
+                         title.position = "top"),
+                       na.value = "white") +
+  theme_minimal(base_size = 11) +
+  theme(legend.justification = c("right", "top"))
+
+# Combine
+p_lisa_tripanel <- (p_scatter | p_clusters | p_ii) +
+  patchwork::plot_layout(guides = "auto")
+
+# Export EPS
+ggsave(
+  here::here("Figures", "English", "lisa_tripanel_standardised_en.eps"),
+  plot   = p_lisa_tripanel,
+  width  = 15,
+  height = 5,
+  dpi    = 350,
+  device = cairo_ps
+)
+```
+
+
+## Figure 5. Model performance metrics
+
+Figure 5. Comparison of DIC, WAIC, and logML across spatial models.  
+Metrics provide complementary evidence on model fit and complexity.
+
+
+```{r Figure_5}
+
+# ── Model performance metrics extraction ────────────────────────────────────
+tabla_modelos <- tibble::tibble(
+  Modelo = c("Full spatial (besag + iid + era)",
+             "Spatial without era (besag + iid)",
+             "Non-spatial (only era)"),
+  DIC   = c(fit_besag_sep$dic$dic,
+            fit_besag_noera$dic$dic,
+            fit_noesp$dic$dic),
+  WAIC  = c(fit_besag_sep$waic$waic,
+            fit_besag_noera$waic$waic,
+            fit_noesp$waic$waic),
+  logML = c(fit_besag_sep$mlik[1],
+            fit_besag_noera$mlik[1],
+            fit_noesp$mlik[1])
+)
+
+tabla_modelos_larga <- tabla_modelos |>
+  pivot_longer(cols = c(DIC, WAIC, logML), names_to = "Metric", values_to = "Value") |>
+  mutate(
+    Metric = factor(Metric, levels = c("DIC", "WAIC", "logML")),
+    Modelo = factor(Modelo, levels = c(
+      "Full spatial (besag + iid + era)",
+      "Spatial without era (besag + iid)",
+      "Non-spatial (only era)"
+    ))
+  )
+
+colores_metricas <- c(
+  "DIC"   = "#EF5703FF",
+  "WAIC"  = "#E3B710FF",
+  "logML" = "#3A9AB2FF"
+)
+
+p_metricas <- ggplot(tabla_modelos_larga, aes(x = Value, y = Modelo, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  geom_text(
+    aes(label = round(Value, 0)),
+    position = position_dodge(width = 0.7),
+    hjust = ifelse(tabla_modelos_larga$Value > 0, 1.05, -0.05),
+    vjust = 0.5,
+    size  = 3,
+    color = "black"
+  ) +
+  scale_fill_manual(values = colores_metricas) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    x = "Metric value",
+    y = NULL,
+    fill = "Metric"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.justification = c("right", "top"))
+
+
+#Exportar PNG
+ggsave(
+  filename = here::here("Figures", "English", "Figure 5.png"),
+  plot     = p_metricas,
+  width    = 7,
+  height   = 5,
+  dpi      = 350
+)
+
+
+# Exportar EPS
+ggsave(
+  filename = here::here("Figures", "English","Figure 5.eps"),
+  plot     = p_metricas,
+  width    = 7,
+  height   = 5,
+  dpi      = 350,
+  device   = cairo_ps
+)
+
+p_metricas
+
+
+```
+
+
+## Figure 6. Fixed effects coefficients
+
+Figure 6. Posterior summaries for βₖ:  
+Left panel shows means and 95% credible intervals for each covariate across models;  
+right panel shows the full posterior distributions under the spatial model.
+
+
+```{r figure_6}
+
+
+# ── 1. Extract posterior summaries ───────────────────────────────────────────
+extract_betas <- function(fit, model_label) {
+  fit$summary.fixed |>
+    tibble::rownames_to_column("covariate") |>
+    dplyr::mutate(model = model_label) |>
+    dplyr::select(model, covariate, mean, `0.025quant`, `0.975quant`)
+}
+
+betas_comparados <- dplyr::bind_rows(
+  extract_betas(fit_besag_sep,   "Full spatial"),
+  extract_betas(fit_besag_noera, "Spatial w/o era"),
+  extract_betas(fit_noesp,       "Non-spatial")
+)
+
+covariate_labels <- c(
+  "(Intercept)"               = "Intercept",
+  "dem_media_z"              = "Mean elevation (z)",
+  "pendiente_media_z"        = "Mean slope (z)",
+  "lst_media_z"              = "Mean LST (z)",
+  "precip_media_z"           = "Mean precipitation (z)",
+  "log_dem_cv_z"             = "Elevation CV (log, z)",
+  "log_pendiente_cv_z"       = "Slope CV (log, z)",
+  "log_lst_cv_temporal_z"    = "LST CV (log, z)",
+  "log_precip_cv_temporal_z" = "Precipitation CV (log, z)"
+)
+
+betas_comparados$covariate <- factor(
+  betas_comparados$covariate,
+  levels = rev(names(covariate_labels))
+)
+levels(betas_comparados$covariate) <- rev(unname(covariate_labels))
+
+# ── 2. Forest plot ────────────────────────────────────────────────────────────
+pal_modelos <- c(
+  "Full spatial"     = "#EF5703FF",
+  "Spatial w/o era"  = "#E3B710FF",
+  "Non-spatial"      = "#3A9AB2FF"
+)
+
+p_forest <- ggplot(betas_comparados, aes(
+  x = mean,
+  y = covariate,
+  xmin = `0.025quant`,
+  xmax = `0.975quant`,
+  color = model
+)) +
+  geom_point(position = position_dodge(width = 0.7), size = 2) +
+  geom_errorbar(position = position_dodge(width = 0.7), width = 0.25) +
+  scale_color_manual(values = pal_modelos) +
+  labs(
+    x = "Posterior mean E[β | data]",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.direction = "horizontal",
+    legend.justification = "left"
+  )
+
+# ── 3. Posterior densities ───────────────────────────────────────────────────
+marginals_beta <- fit_besag_sep$marginals.fixed
+
+densities_df <- purrr::imap_dfr(marginals_beta, ~{
+  as.data.frame(.x) |>
+    tibble::as_tibble() |>
+    dplyr::rename(beta = x, density = y) |>
+    dplyr::mutate(covariate = covariate_labels[.y])
+})
+
+p_densities <- ggplot(densities_df, aes(x = beta, y = density)) +
+  geom_line(color = pal_qualitat[1], linewidth = 0.6) +
+  geom_vline(xintercept = 0, color = pal_qualitat[4], linetype = "dotted", linewidth = 0.8) +
+  facet_wrap(~ covariate, scales = "free", ncol = 3) +
+  labs(
+    x = "β value",
+    y = "Posterior density"
+  ) +
+  theme_minimal(base_size = 13)
+
+# ── 4. Combine and export ────────────────────────────────────────────────────
+mosaic_betas <- p_forest + p_densities + plot_layout(widths = c(1, 1.5))
+
+ggsave(
+  here::here("Figures", "English","Figure 6.eps"),
+  plot   = mosaic_betas,
+  width  = 13,
+  height = 6.5,
+  dpi    = 350,
+  device = cairo_ps
+)
+
+mosaic_betas
+
+
+
+```
+
+## Figure 7. Spatial effects
+
+Figure 7. Mean and uncertainty of structured (uᵢ) and unstructured (vᵢ) spatial effects.  
+Top row: posterior means. Bottom row: posterior SDs indicating model confidence.
+
+
+```{r Figure_7}
+
+
+## ── Figura 7: Efectos espaciales estructurados (uᵢ) y no estructurados (vᵢ) ──
+
+# 1. Extraer efectos aleatorios desde el modelo BYM separado
+ran_u <- fit_besag_sep$summary.random$id_poly_u
+ran_v <- fit_besag_sep$summary.random$id_poly_v
+
+# 2. Agregar columnas al objeto sf si no existen
+if (!"u_mean" %in% names(modelo_sf)) modelo_sf$u_mean <- NA_real_
+if (!"u_sd"   %in% names(modelo_sf)) modelo_sf$u_sd   <- NA_real_
+if (!"v_mean" %in% names(modelo_sf)) modelo_sf$v_mean <- NA_real_
+if (!"v_sd"   %in% names(modelo_sf)) modelo_sf$v_sd   <- NA_real_
+
+# 3. Asignar valores para polígonos válidos
+modelo_sf$u_mean[keep_log] <- ran_u$mean
+modelo_sf$u_sd  [keep_log] <- ran_u$sd
+modelo_sf$v_mean[keep_log] <- ran_v$mean
+modelo_sf$v_sd  [keep_log] <- ran_v$sd
+
+# 4. Paleta continua para medias
+pal_continuo <- paletteer::paletteer_c("grDevices::Zissou 1", 100)
+
+# 5. Parámetros de leyenda
+my_guide <- guide_colourbar(
+  barwidth      = unit(0.3, "cm"),
+  barheight     = unit(3, "cm"),
+  direction     = "vertical",
+  title.position = "top"
+)
+
+# 6. Mapas de media posterior y desviación estándar
+p_u_mean <- ggplot(modelo_sf) +
+  geom_sf(aes(fill = u_mean), color = NA) +
+  scale_fill_gradientn(colours = pal_continuo, guide = my_guide, name = "mean(u)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.justification = c("right", "top"))
+
+p_u_sd <- ggplot(modelo_sf) +
+  geom_sf(aes(fill = u_sd), color = NA) +
+  scale_fill_viridis_c(option = "magma", direction = -1, guide = my_guide, name = "sd(u)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.justification = c("right", "top"))
+
+p_v_mean <- ggplot(modelo_sf) +
+  geom_sf(aes(fill = v_mean), color = NA) +
+  scale_fill_gradientn(colours = pal_continuo, guide = my_guide, name = "mean(v)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.justification = c("right", "top"))
+
+p_v_sd <- ggplot(modelo_sf) +
+  geom_sf(aes(fill = v_sd), color = NA) +
+  scale_fill_viridis_c(option = "magma", direction = -1, guide = my_guide, name = "sd(v)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.justification = c("right", "top"))
+
+# 7. Composición visual y exportación
+p_ui_vi <- (p_u_mean + p_v_mean) / (p_u_sd + p_v_sd)
+
+ggsave(
+  filename = here::here("Figures", "Figure 7.eps"),
+  plot     = p_ui_vi,
+  width    = 10,
+  height   = 10,
+  dpi      = 350,
+  device   = cairo_ps
+)
+
+
+```
+
